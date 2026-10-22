@@ -302,7 +302,7 @@ export const api = {
       return request<Record<string, unknown>>('/api/parcelles', {
         method: 'POST',
         body: JSON.stringify(payload),
-      }, 30_000);
+      }, 60_000);
     },
 
   /** Route absente côté Malto — simulation locale conservée. */

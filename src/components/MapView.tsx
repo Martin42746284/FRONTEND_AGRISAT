@@ -12,6 +12,24 @@ import { parcelOutlineStyle } from '../lib/parcel-outline-style';
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
 const DEFAULT_CENTER = { lat: -19.848219, lng: 47.011882 };
 const DEFAULT_ZOOM = 16;
+
+/**
+ * Ordre d'empilement des contours de parcelles.
+ *
+ * Toutes les parcelles partagées le meme z-index : le Traceur se fait alors
+ * dans l'ordre d'ajout, et un grand champ masque les petits contours qu'il
+ * englobe. On empile donc les petites parcelles au-dessus des grandes, ce
+ * qui correspond a l'ordre de lecture attendu (on voit les details, le
+ * contour global reste en fond).
+ */
+function outlineZIndex(parcel: Parcel): number {
+  const ha = parcel.areaHa;
+  if (ha < 0.1) return 18;
+  if (ha < 0.5) return 16;
+  if (ha < 1) return 14;
+  if (ha < 3) return 12;
+  return 10;
+}
 const MAP_CONTAINER_STYLE = { width: '100%', height: '100%' };
 
 export default function MapView({ baseIds }: { baseIds: Set<string> }) {
@@ -337,7 +355,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
           strokeOpacity: options.opacity,
           strokeWeight: options.weight,
         };
-      polygon.setOptions({ ...displayStyle, zIndex: parcel.id === selectedId ? 1000 : 10 });
+      polygon.setOptions({ ...displayStyle, zIndex: parcel.id === selectedId ? 1000 : outlineZIndex(parcel) });
       if (!onMap.current.has(parcel.id)) {
         polygon.setMap(map);
         onMap.current.add(parcel.id);

@@ -7,7 +7,22 @@ const envLike: Record<string, string | undefined> =
   ?? {};
 export const API_BASE = envLike.VITE_MALTO_API_URL?.replace(/\/+$/, '') ?? '';
 
-export async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 20_000): Promise<T> {
+/**
+ * Delai par defaut des appels API (ms).
+ *
+ * Le defaut de 20 s etait trop court pour `GET /api/parcelles` : la route
+ * charge les 37 colonnes de la table `parcelles` (JSONB volumineux) et, sur
+ * une base distante a faible debit, la premiere requete depasse 30 s. Le
+ * client abandonnait alors que le backend repondait 200 quelques secondes
+ * plus tard, et l'application s'affichait vide.
+ *
+ * 120 s couvre la lecture complete ; les appels d'inference longues
+ * (analyse, detection, tracage VHR) ont leurs propres delais plus longs
+ * (voir services.ts).
+ */
+export const DEFAULT_TIMEOUT_MS = 120_000;
+
+export async function request<T>(path: string, init: RequestInit = {}, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const ctrl = new AbortController();
   // Annulation externe possible (démontage de composant, changement de zone) : `init.signal`.
   const external = init.signal ?? null;

@@ -1,21 +1,55 @@
 import type { Parcel } from '../types';
 
-/** Style cartographique des contours VHR, accordé à la fiabilité mesurée par taille. */
+/**
+ * Style cartographique des contours VHR (tracé automatique par le modèle).
+ *
+ * Deux contraintes :
+ *
+ * 1. Ne pas réutiliser le langage des cultures. Dans `style.ts`, un contour
+ *    épais signifie « vérifié sur le terrain ou corrigé » (légende de la
+ *    carte). Les contours VHR sont tous *non classés* : leur donner un trait
+ *    épais ferait croire à une validation terrain qui n'a pas eu lieu.
+ *    On distingue donc la taille (fine pour les petites parcelles, un peu
+ *    plus marquée pour les grandes) par l'épaisseur et l'opacité, mais on
+ *    reste dans une gamme fine, sous le seuil du trait « validé ».
+ *
+ * 2. Rester lisible sur l'imagerie. Un contour blanc opaque sur une photo
+ *    de culture disparaît ; on utilise un jaune chaud translucide, et un
+ *    liseré sombre discret qui se détache aussi bien sur un champ clair que
+ *    sur un champ sombre.
+ *
+ * L'incertitude est marquée par le pointillé (comme pour les cultures), et
+ * la sélection par un trait épais orange.
+ */
 export function parcelOutlineStyle(parcel: Parcel, selected = false) {
-  const reliable = parcel.areaHa >= 0.5;
-  const visible = parcel.areaHa >= 0.1;
-  const base = reliable
-    ? { strokeColor: '#FFFFFF', strokeOpacity: 0.96, strokeWeight: 1.6 }
-    : visible
-      ? { strokeColor: '#FFD166', strokeOpacity: 0.82, strokeWeight: 1.2 }
-      : { strokeColor: '#FFD166', strokeOpacity: 0.48, strokeWeight: 0.85 };
+  const aire = parcel.areaHa;
+  // Fiabilite mesuree par taille : le README du service VHR indique ~78 % de
+  // contours corrects au-dessus de 0,5 ha, ~5 % sous 0,1 ha.
+  const fiable = aire >= 0.5;
+  const visible = aire >= 0.1;
+
+  if (selected) {
+    return {
+      strokeColor: '#FF7A00',
+      strokeOpacity: 1,
+      strokeWeight: 3,
+      fillColor: '#FFB703',
+      fillOpacity: 0.18,
+    };
+  }
+
+  const base = {
+    strokeColor: '#FFC83D',
+    strokeOpacity: fiable ? 0.92 : visible ? 0.78 : 0.5,
+    strokeWeight: fiable ? 1.6 : visible ? 1.2 : 0.9,
+    fillColor: '#FFC83D',
+    fillOpacity: fiable ? 0.06 : visible ? 0.04 : 0.02,
+  };
 
   return {
     ...base,
-    strokeColor: selected ? '#FF9F1C' : base.strokeColor,
-    strokeOpacity: selected ? 1 : base.strokeOpacity,
-    strokeWeight: selected ? 2.8 : base.strokeWeight,
-    fillColor: selected ? '#FFB703' : base.strokeColor,
-    fillOpacity: selected ? 0.14 : 0.035,
+    // Sous 0,1 ha, la fiabilite est tres faible : on le dit par le pointille,
+    // comme pour une parcelle non classee.
+    dashArray: visible ? undefined : '3 3',
   };
 }
