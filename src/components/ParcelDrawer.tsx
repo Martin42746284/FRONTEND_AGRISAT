@@ -184,8 +184,12 @@ function ParcelModal({ kind, parcel, current, onClose }: { kind: 'correct' | 'ob
   const save = async () => {
     if (kind === 'correct' || kind === 'observe') {
       if (!note.trim()) { toast('Ajoutez une note pour justifier la modification.', 'warn'); return; }
-      correctParcel(parcel.id, culture, note.trim(), kind === 'observe' ? 'observation' : 'correction');
-      toast(kind === 'observe' ? 'Observation enregistrée.' : 'Classe corrigée.', 'ok');
+      try {
+        await correctParcel(parcel.id, culture, note.trim(), kind === 'observe' ? 'observation' : 'correction');
+        toast(kind === 'observe' ? 'Observation enregistrée.' : 'Classe corrigée.', 'ok');
+      } catch (err) {
+        toast('Échec de l\'enregistrement de la correction.', 'danger');
+      }
     } else if (kind === 'reject') {
       rejectParcel(parcel.id);
       toast('Polygone rejeté.', 'ok');

@@ -55,6 +55,31 @@ export interface DeployedModels {
     modele_present?: boolean;
     modes?: string[];
   };
+};
+
+/** Payload PATCH /api/parcelles/{id} — correction humaine d'une parcelle. */
+export interface ParcelUpdate {
+  culture_detected?: string;
+  confidence?: number; // 0–100
+  verdict?: string;
+  details?: string;
+  saison?: string;
+}
+
+/** Création d'une entrée d'audit (journal des actions utilisateurs). */
+export interface AuditEntryCreate {
+  user_name: string;
+  action: string; // ex. 'correction', 'rejet', 'observation', 'connexion'
+  object: string;   // ex. 'Parcelle <id>', 'Session analyste'
+}
+
+/** Entrée d'audit renvoyée par l'API. */
+export interface AuditEntryDto {
+  id: string;
+  at: string;
+  user_name: string;
+  action: string;
+  object: string;
 }
 
 /** Payload POST /api/analyze — schéma Malto AnalyzeSimpleRequest (champs requis : latitude, longitude, radius en m). */
@@ -316,6 +341,26 @@ export const api = {
     } catch (err) {
       console.warn('[AgriSat] Signalement non envoyé (route Malto absente) :', err);
     }
+  },
+    /** Modifie une parcelle (correction humaine de la culture détectée). */
+  async correctParcelle(id: string, payload: ParcelUpdate): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>(`/api/parcelles/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }, 30_000);
+  },
+
+  /** Envoie une entrée d'audit au backend. */
+  async logAudit(payload: AuditEntryCreate): Promise<AuditEntryDto> {
+    return request<AuditEntryDto>('/api/audit', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }, 30_000);
+  },
+
+  /** Liste les entrées d'audit récentes. */
+  async getAudit(): Promise<AuditEntryDto[]> {
+    return request<AuditEntryDto[]>('/api/audit');
   },
 };
 

@@ -4,7 +4,7 @@ import type {
   Analysis, AuditEntry, Commune, CultureId, Filters, LatLng, Parcel, Region, Role, User,
 } from '../types';
 import { AREA_MAX, DEFAULT_COLORS, DEFAULT_SEASON, PIPELINE_STEPS, CURRENT_MODEL, ROLES } from '../data/constants';
-import { api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectionResult } from '../api/services';
+import { api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectionResult, type ParcelUpdate, type AuditEntryCreate } from '../api/services';
 import { maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
 import { centroidOf, isDuplicateVhrParcel, pointInPolygon, ringAreaHa } from '../lib/geometry';
 
@@ -123,7 +123,21 @@ export const useApp = create<State>()(
       init: async () => {
         if (get().ready) return;
         const db = await api.bootstrap();
-        set({ parcels: db.parcels, regions: db.regions, communes: db.communes, analyses: db.analyses, users: db.users, audit: db.audit, ready: true });
+        // Charger aussi l'historique d'audit depuis le backend
+        let audit: AuditEntry[] = [];
+        try {
+          const remoteAudit = await api.getAudit();
+          audit = remoteAudit.map((a) => ({
+            id: a.id,
+            at: a.at,
+            userName: a.user_name,
+            action: a.action,
+            object: a.object,
+          }));
+        } catch (err) {
+          console.warn('[AgriSat] Échec du chargement de l\'audit :', err);
+        }
+        set({ parcels: db.parcels, regions: db.regions, communes: db.communes, analyses: db.analyses, users: db.users, audit, ready: true });
         // Ouverture directe sur la carte : profil analyste par défaut, modifiable depuis le menu utilisateur.
         if (!get().user) get().login('analyste');
       },
@@ -268,14 +282,20 @@ export const useApp = create<State>()(
         set((s) => ({ toasts: [...s.toasts, { id, msg, tone }] }));
         setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), 4200);
       },
-      logAudit: (action, object) => {
-        const u = get().user;
+      logAudit: async (action, object) => {
+        const s = get();
+        const u = s.user;
         if (!u) return;
         const e: AuditEntry = { id: `au${Date.now()}${Math.random()}`, at: new Date().toISOString(), userName: u.name, action, object };
         set((s) => ({ audit: [e, ...s.audit] }));
+        try {
+          await api.logAudit({ user_name: u.name, action, object });
+        } catch (err) {
+          console.warn('[AgriSat] Échec de l\'enregistrement d\'audit :', err);
+        }
       },
 
-      correctParcel: (id, to, note, kind) => {
+      correctParcel: async (id, to, note, kind) => {
         const s = get();
         const seasonId = s.filters.seasonId;
         const by = s.user?.name ?? 'Inconnu';
@@ -294,6 +314,18 @@ export const useApp = create<State>()(
             };
           }),
         });
+        // Persister vers le backend
+        try {
+          const r = s.parcels.find((p) => p.id === id)?.results[seasonId];
+          await api.correctParcelle(id, {
+            culture_detected: to,
+            confidence: r ? Math.round(r.confidence * 100) : undefined,
+            verdict: kind === 'observation' ? 'Observation terrain' : 'Correction humaine',
+            saison: seasonId,
+          });
+        } catch (err) {
+          console.warn('[AgriSat] Échec de la correction de parcelle :', err);
+        }
         get().logAudit(kind === 'observation' ? 'Saisie d’observation terrain' : 'Correction de classe', `Parcelle ${id}`);
       },
       rejectParcel: (id) => {
