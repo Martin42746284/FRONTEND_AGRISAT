@@ -95,19 +95,26 @@ function isNonOrge(p: MaltoParcel): boolean {
 }
 
 /**
- * Confiance du classement ТС, 0-1 :
- *  - culture_detected renseigné → `confidence` Malto est la probabilité d'orge (0–100)
- *    dans le verdict (elle est déjà la certitude du classement, pas besoin d'inverser) ;
- *  - culture_detected absent → pas encore classifiée : culture = inconnue, confiance 0.
- */
-function mapConfidence(p: MaltoParcel): number {
-  const declared = (p.culture_detected ?? '').trim() !== '';
-  if (!declared) return 0.05; // non encore classifiée
-  let conf = p.confidence ?? orgeProbFromVerdict(p.verdict);
-  if (conf == null) conf = p.ndvi_percentage != null ? p.ndvi_percentage / 100 : 0.5;
-  else if (conf > 1) conf /= 100; // % → probabilité
-  return Math.min(0.99, Math.max(0.05, conf));
-}
+ * Confiance du classement, 0-1 :
+ *  - culture_detected renseigné :
+   *      • culture_detected = 'Orge'   → confidence est la probabilité d'orge   (0-100)
+   *      • culture_detected = 'Non-orge' → confidence est la probabilité de non-orge (0-100),
+   *        donc la probabilité d'orge est 100 - confidence
+   *  - culture_detected absent → pas encore classifiée : culture = inconnue, confiance 0.
+   */
+  function mapConfidence(p: MaltoParcel): number {
+    const declared = (p.culture_detected ?? '').trim() !== '';
+    if (!declared) return 0.05; // non encore classifiée
+    let conf = p.confidence ?? orgeProbFromVerdict(p.verdict);
+    if (conf == null) conf = p.ndvi_percentage != null ? p.ndvi_percentage / 100 : 0.5;
+    else if (conf > 1) conf /= 100; // % → probabilité
+    // Si c'est détecté comme « Non-orge », inverser : confidence est la probabilité de non-orge,
+    // donc la probabilité d'orge est 1 - conf
+    if (isNonOrge(p)) {
+      conf = 1 - conf;
+    }
+    return Math.min(0.99, Math.max(0.05, conf));
+  }
 
 /** Statut dérivé : verdict Malto → workflow frontend. */
 function mapStatus(p: MaltoParcel, conf: number): Status {
