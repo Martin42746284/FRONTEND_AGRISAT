@@ -32,7 +32,7 @@ export function toGeoJSON(views: ParcelView[], ctx: Ctx, filtersLabel: string): 
   const rm = Object.fromEntries(ctx.regions.map((r) => [r.id, r]));
   return JSON.stringify({
     type: 'FeatureCollection',
-    metadata: { generated: new Date().toISOString(), filters: filtersLabel, disclaimer: DISCLAIMER, fakeData: true },
+    metadata: { generated: new Date().toISOString(), filters: filtersLabel, disclaimer: DISCLAIMER, fakeData: false },
     features: views.map(({ p, r }) => ({
       type: 'Feature',
       id: p.id,
@@ -72,7 +72,7 @@ th{font-weight:600} .sw{display:inline-block;width:12px;height:12px;border-radiu
 <div class="map">Emplacement de la carte (rendu cartographique fourni par l'API de rapport)</div>
 <table><thead><tr><th>Classe</th><th>Parcelles</th><th>Superficie</th></tr></thead><tbody>${rows}
 <tr><th>Total</th><th>${fmtInt(opts.total.count)}</th><th>${fmtHa(opts.total.area)}</th></tr></tbody></table>
-<div class="box"><strong>Avertissement.</strong> ${DISCLAIMER} Données fictives de démonstration.</div>
+<div class="box"><strong>Avertissement.</strong> ${DISCLAIMER}</div>
 <script>window.onload=()=>setTimeout(()=>window.print(),300)</script></body></html>`);
   w.document.close();
   return true;
