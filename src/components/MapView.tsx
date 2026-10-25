@@ -3,11 +3,11 @@ import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';
 import { useApp } from '../store/useApp';
 import { computeStyle } from '../lib/style';
 import { ringAreaHa } from '../lib/geometry';
-import { cultureLabel, ROLES } from '../data/constants';
-import { fmtHa } from '../lib/format';
+import { ROLES } from '../data/constants';
 import type { Parcel } from '../types';
 import { useViewportParcelTracing } from '../hooks/useViewportParcelTracing';
 import { parcelOutlineStyle } from '../lib/parcel-outline-style';
+import { pickParcelAt } from '../lib/parcel-selection';
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
 const DEFAULT_CENTER = { lat: -19.848219, lng: 47.011882 };
@@ -65,11 +65,9 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const zonePolygon = useRef<google.maps.Polygon | null>(null);
   const zoneMarkers = useRef<google.maps.Marker[]>([]);
   const editMarkers = useRef<google.maps.Marker[]>([]);
-  const infoWindow = useRef<google.maps.InfoWindow | null>(null);
   const searchCenterMarker = useRef<google.maps.Marker | null>(null);
 
-  const latest = useRef({ parcels: new Map<string, Parcel>(), seasonId: f.seasonId, drawing, automaticSearchCenter });
-  latest.current.seasonId = f.seasonId;
+  const latest = useRef({ parcels: new Map<string, Parcel>(), drawing, automaticSearchCenter });
   latest.current.drawing = drawing;
   latest.current.automaticSearchCenter = automaticSearchCenter;
   const center = useMemo(() => DEFAULT_CENTER, []);
@@ -89,7 +87,6 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   // Carte, clics de dessin et écoute du déplacement/zoom pour lancer le traçage.
   useEffect(() => {
     if (!map) return;
-    infoWindow.current = new google.maps.InfoWindow();
     const idle = map.addListener('idle', () => traceIdleHandler.current(map));
     const click = map.addListener('click', (event: google.maps.MapMouseEvent) => {
       if (latest.current.drawing && event.latLng) {
@@ -103,8 +100,6 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     return () => {
       idle.remove();
       click.remove();
-      infoWindow.current?.close();
-      infoWindow.current = null;
       searchCenterMarker.current?.setMap(null);
       searchCenterMarker.current = null;
       parcelLayers.current.forEach((layer) => layer.setMap(null));
@@ -173,8 +168,6 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         : commune.coverage === 'partielle'
           ? { strokeColor: '#C98A00', strokeWeight: 1.6, fillColor: '#F2B84B', fillOpacity: 0.14 }
           : { strokeColor: '#5B6770', strokeWeight: 1.4, fillColor: '#5B6770', fillOpacity: 0.25 };
-      const label = commune.coverage === 'analysee' ? 'Analysée'
-        : commune.coverage === 'partielle' ? 'Couverture partielle (nuages)' : 'Aucune donnée — non analysée';
       const polygon = new google.maps.Polygon({
         map: showCoverage ? map : null,
         paths: commune.outline.map(([lat, lng]) => ({ lat, lng })),
@@ -183,13 +176,6 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         clickable: true,
         zIndex: 2,
       });
-      polygon.addListener('mouseover', (event: google.maps.MapMouseEvent) => {
-        if (!event.latLng || !infoWindow.current) return;
-        infoWindow.current.setContent(`<b>${commune.name}</b><br/>${label}<br/>Image : ${commune.imageDate ?? '—'} · nuages ${Math.round(commune.cloudCover * 100)} %`);
-        infoWindow.current.setPosition(event.latLng);
-        infoWindow.current.open({ map });
-      });
-      polygon.addListener('mouseout', () => infoWindow.current?.close());
       communeLayers.current.push(polygon);
     }
     return () => {
@@ -239,8 +225,16 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         clickable: true,
         zIndex: 10,
       });
-      polygon.addListener('click', () => {
-        if (!latest.current.drawing) useApp.getState().select(parcel.id);
+      polygon.addListener('click', (event: google.maps.PolyMouseEvent) => {
+        const state = useApp.getState();
+        if (state.drawing) return;
+        // Un contour non classé (tracé manuel, VHR) peut recouvrir une parcelle
+        // classée : le clic ouvre alors celle-ci pour afficher sa culture.
+        const point: [number, number] = event.latLng
+          ? [event.latLng.lat(), event.latLng.lng()]
+          : parcel.centroid;
+        const target = pickParcelAt(point, parcel, parcels, (id) => onMap.current.has(id));
+        state.select(target.id);
       });
       // Double-clic : passe en édition du contour (sommets déplaçables). Droit limité par le rôle.
       polygon.addListener('dblclick', () => {
@@ -252,17 +246,6 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         }
         s.startEditParcel(parcel.id);
       });
-      polygon.addListener('mouseover', (event: google.maps.MapMouseEvent) => {
-        const current = latest.current.parcels.get(parcel.id);
-        const result = current?.results[latest.current.seasonId];
-        if (!current || !result || !event.latLng || !infoWindow.current) return;
-        infoWindow.current.setContent(
-          `<b>${current.id}</b><br/>${cultureLabel(result.culture)} · ${Math.round(result.confidence * 100)} %<br/>${fmtHa(current.areaHa)}`,
-        );
-        infoWindow.current.setPosition(event.latLng);
-        infoWindow.current.open({ map });
-      });
-      polygon.addListener('mouseout', () => infoWindow.current?.close());
       parcelLayers.current.set(parcel.id, polygon);
     }
   }, [map, parcels, editingParcelId]);

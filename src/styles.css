@@ -145,6 +145,106 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .boot { height: 100%; display: grid; place-content: center; gap: 12px; text-align: center; color: var(--ink-2); } .boot__bar { height: 4px; width: 200px; background: var(--line); border-radius: 2px; overflow: hidden; position: relative; margin: 0 auto; } .boot__bar::after { content: ''; position: absolute; inset: 0; width: 40%; background: var(--accent); animation: boot 1s ease-in-out infinite; }
 @keyframes boot { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 
+/* ---------- Écran de démarrage (logo MALTO plein écran) ---------- */
+.splash {
+  position: fixed; inset: 0; z-index: 4000;
+  background: var(--ink);
+  overflow: hidden;
+  opacity: 1;
+  transition: opacity .48s ease, transform .48s ease;
+}
+.splash--leaving { opacity: 0; transform: scale(1.015); pointer-events: none; }
+/* Fond d'ambiance : la même image, étirée puis fortement floutée, couvre tout
+   l'écran. Sur les écrans plus larges que le logo, les bandes latérales
+   reprennent ainsi ses couleurs au lieu d'un fond uni. */
+.splash__backdrop {
+  position: absolute; inset: -48px;
+  background: url('/logo_MALTO.jpg') center / 100% 100% no-repeat;
+  filter: blur(34px) saturate(1.05);
+  transform: scale(1.04);
+  animation: splash-drift 22s ease-in-out infinite alternate;
+}
+.splash__veil {
+  position: absolute; inset: 0;
+  background: rgba(8, 20, 24, .18);
+}
+/* L'image occupe tout l'écran sans être ni filtrée, ni recadrée, ni recolorée.
+   `contain` préserve l'intégralité du visuel et son ratio natif 1253 × 832. */
+.splash__logo {
+  position: absolute; inset: 0; z-index: 1;
+  display: block; width: 100%; height: 100%;
+  object-fit: contain; object-position: center;
+  user-select: none; -webkit-user-drag: none;
+  animation: splash-reveal 1.3s cubic-bezier(.16,.84,.28,1) both;
+  will-change: transform, opacity;
+}
+/* Écrans paysage courants (16:10 à 19:10) : l'image nette couvre tout l'écran.
+   Le léger recadrage ne porte que sur le haut du ciel (zone lisse), jamais sur
+   le bas ni sur les côtés : aucun élément du visuel n'est retiré. Sur mobile,
+   carré ou ultra-large, l'image reste entière avec le fond d'ambiance. */
+@media (min-aspect-ratio: 3/2) and (max-aspect-ratio: 19/10) {
+  .splash__logo { object-fit: cover; object-position: center bottom; }
+}
+.splash__loader {
+  position: absolute; z-index: 2;
+  left: 50%; bottom: clamp(18px, 4vh, 38px);
+  transform: translateX(-50%);
+  display: grid; justify-items: center; gap: 12px;
+  width: min(300px, 70vw);
+  animation: splash-loader-in .7s cubic-bezier(.2,.75,.3,1) .4s both;
+}
+/* Halo très discret derrière le badge, pour détacher le chargement du visuel. */
+.splash__loader::before {
+  content: ''; position: absolute; z-index: -1;
+  top: -26px; left: 50%; transform: translateX(-50%);
+  width: 280px; height: 120px;
+  background: radial-gradient(closest-side, rgba(127,209,200,.14), transparent 72%);
+  filter: blur(4px);
+  pointer-events: none;
+}
+.splash__badge {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 8px 15px 8px 13px;
+  border-radius: 999px;
+  background: rgba(8,22,26,.56);
+  border: 1px solid rgba(255,255,255,.16);
+  backdrop-filter: blur(10px) saturate(1.08); -webkit-backdrop-filter: blur(10px) saturate(1.08);
+  box-shadow: 0 6px 24px rgba(0,0,0,.30), inset 0 1px 0 rgba(255,255,255,.10);
+}
+.splash__spinner {
+  width: 14px; height: 14px; flex: none; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.24);
+  border-top-color: #7FD1C8;
+  animation: splash-spin .85s linear infinite;
+}
+.splash__status {
+  margin: 0;
+  color: #EDF5F4; font-size: 12.5px; letter-spacing: .01em;
+  white-space: nowrap;
+}
+.splash__progress {
+  width: 100%; height: 3px; border-radius: 999px;
+  background: rgba(255,255,255,.18);
+  overflow: hidden; position: relative;
+  box-shadow: 0 1px 6px rgba(0,0,0,.35);
+}
+.splash__progress span {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 36%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(15,127,134,0), #7FD1C8 55%, #E3B505);
+  box-shadow: 0 0 12px rgba(127,209,200,.55);
+  animation: splash-progress 1.6s cubic-bezier(.45,0,.55,1) infinite;
+}
+@keyframes splash-reveal {
+  from { opacity: 0; transform: scale(1.035); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes splash-spin { to { transform: rotate(360deg); } }
+@keyframes splash-drift { from { transform: scale(1.03); } to { transform: scale(1.09); } }
+@keyframes splash-loader-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes splash-progress { from { transform: translateX(-130%); } to { transform: translateX(360%); } }
+
+
 /* ---------- Responsive ---------- */
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
@@ -284,4 +384,24 @@ body[data-drawer="open"] .maptools { right: calc(var(--drawer) + 24px); }
   .drawer { top: auto; height: 78%; right: 0; left: 0; width: auto; border-radius: 14px 14px 0 0; }
   body[data-drawer="open"] .maptools { margin-right: 0; right: 10px; }
   .login { grid-template-columns: 1fr; gap: 24px; } .grid2 { grid-template-columns: 1fr; }
+}
+
+/* Fiche culture : indices, cycle cultural, suivi NDVI et détails repliables. */
+.culture-verdict { margin: 8px 0 4px; font-size: 13px; color: var(--ink-2); font-weight: 550; }
+.indices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.index { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: #fff; }
+.index span { display: block; font-size: 10.5px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em; }
+.index b { font-size: 15px; font-weight: 650; }
+.risk-list { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink-2); }
+.spark { margin: 6px 0 0; } .spark svg { width: 100%; height: 56px; display: block; background: #fff; border: 1px solid var(--line); border-radius: 8px; }
+.muted-sm { font-size: 11.5px; color: var(--ink-3); margin-top: 4px; }
+.drawer__more { border-bottom: 1px solid var(--line-2); padding-bottom: 12px; }
+.drawer__more > summary { cursor: pointer; padding: 10px 0 4px; font-weight: 600; font-size: 13px; color: var(--ink-2); }
+.drawer__more[open] > summary { color: var(--ink); }
+
+/* Panneau de filtres ouvert : la légende se décale à droite au lieu de passer dessous. */
+body[data-filters="open"] .legend { left: 424px; }
+@media (max-width: 760px) {
+  /* Sur mobile, le panneau de filtres recouvre presque toute la carte. */
+  body[data-filters="open"] .legend { display: none; }
 }

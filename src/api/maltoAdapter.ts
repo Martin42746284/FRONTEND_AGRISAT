@@ -15,7 +15,7 @@
  *   - surface_ha = 0 → recalculée depuis la géométrie du polygone ;
  *   - région/commune déduites par point-in-polygon du référentiel local.
  */
-import type { CropResult, CultureId, LatLng, Parcel, Status, Region, Commune } from '../types';
+import type { CropResult, CultureDetail, CultureId, LatLng, Parcel, Status, Region, Commune } from '../types';
 import { pointInPolygon, ringAreaHa } from '../lib/geometry';
 import { request } from './http';
 import { DEFAULT_SEASON, SEASON_BY_ID, CURRENT_MODEL } from '../data/constants';
@@ -47,12 +47,32 @@ export interface MaltoParcel {
   culture_declared?: string | null;
   culture_detected?: string | null;
   ndvi_percentage?: number | null;
+  ndre?: number | null;
+  evi?: number | null;
+  savi?: number | null;
+  ndwi?: number | null;
+  spectral_bands?: Record<string, number | null> | null;
   confidence?: number | null;
   verdict?: string | null;
+  details?: string | null;
   saison?: string | null;
+  soil_type?: string | null;
+  risk_factors?: string[] | null;
+  recommendations?: string | null;
+  time_series_s2?: { date?: string | null; ndvi?: number | null }[] | null;
+  estimated_planting_date?: string | null;
+  estimated_harvest_date?: string | null;
+  days_since_planting?: number | null;
+  growth_stage?: string | null;
+  planting_confidence?: number | null;
+  agro_score?: number | null;
+  hybrid_score?: number | null;
+  cnn_prob_barley?: number | null;
+  cnn_prob_non_barley?: number | null;
   created_at?: string | null;
   notes?: string | null;
   owner_name?: string | null;
+  data_source?: string | null;
   [k: string]: unknown;
 }
 
@@ -126,6 +146,66 @@ function mapSeason(raw: string | null | undefined): { id: string; stage: string 
   return { id: DEFAULT_SEASON, stage: s };
 }
 
+/** Libellés de « culture déclarée » qui ne décrivent pas une culture réelle. */
+const EMPTY_CULTURE_LABELS = new Set(['', 'inconnue', 'inconnu', 'unknown', 'non déterminé', 'non determine', 'n/a']);
+
+/**
+ * Détails de la culture enregistrée en base, ou `undefined` si la ligne ne décrit
+ * aucune culture (contour manuel non classé, culture supprimée…).
+ *
+ * Un simple tracé manuel (`culture_declared = « Inconnue »`, aucun indice) n'a pas
+ * de culture : cliquer dessus doit montrer la parcelle, pas une fiche culture vide.
+ */
+export function mapCultureDetail(p: MaltoParcel): CultureDetail | undefined {
+  const declared = p.culture_declared?.trim() || null;
+  const detected = p.culture_detected?.trim() || null;
+  const declaredCulture = declared && !EMPTY_CULTURE_LABELS.has(declared.toLowerCase()) ? declared : null;
+  // Un tracé manuel porte un verdict de contour (« à vérifier sur le terrain »)
+  // mais aucun résultat de culture : le verdict seul n'en fait pas une culture.
+  const hasCulture = Boolean(
+    detected || declaredCulture || p.ndvi_percentage != null || p.confidence != null,
+  );
+  if (!hasCulture) return undefined;
+
+  const timeSeries = (p.time_series_s2 ?? []).flatMap((point) => {
+    const date = typeof point?.date === 'string' ? point.date.trim() : '';
+    if (!date) return [];
+    return [{ date, ndvi: typeof point.ndvi === 'number' ? point.ndvi : null }];
+  });
+
+  return {
+    declared: declaredCulture,
+    detected,
+    confidence: p.confidence ?? null,
+    verdict: p.verdict ?? null,
+    details: p.details ?? null,
+    ndvi: p.ndvi_percentage ?? null,
+    ndre: p.ndre ?? null,
+    evi: p.evi ?? null,
+    savi: p.savi ?? null,
+    ndwi: p.ndwi ?? null,
+    spectralBands: p.spectral_bands ?? null,
+    seasonLabel: p.saison ?? null,
+    growthStage: p.growth_stage ?? null,
+    plantingDate: p.estimated_planting_date ?? null,
+    harvestDate: p.estimated_harvest_date ?? null,
+    daysSincePlanting: p.days_since_planting ?? null,
+    plantingConfidence: p.planting_confidence ?? null,
+    soilType: p.soil_type ?? null,
+    riskFactors: p.risk_factors ?? [],
+    recommendations: p.recommendations ?? null,
+    ownerName: p.owner_name ?? null,
+    notes: p.notes ?? null,
+    source: p.data_source ?? null,
+    timeSeries,
+    agroScore: p.agro_score ?? null,
+    hybridScore: p.hybrid_score ?? null,
+    cnnProbBarley: p.cnn_prob_barley ?? null,
+    cnnProbNonBarley: p.cnn_prob_non_barley ?? null,
+    createdAt: p.created_at ?? null,
+  };
+}
+
 /** Traduit un lot de parcelles Malto vers les Parcel du frontend. */
 export function maltoToFrontend(parcels: MaltoParcel[], zones?: MaltoZoneInfo): Parcel[] {
   return parcels
@@ -180,6 +260,8 @@ export function maltoToFrontend(parcels: MaltoParcel[], zones?: MaltoZoneInfo): 
         createdAt: processedAt,
         results: { [season.id]: result },
         corrections: [],
+        dataSource: p.data_source ?? undefined,
+        cultureDetail: mapCultureDetail(p),
         rejected: false,
       };
     });

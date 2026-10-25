@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cartographie agricole · Madagascar</title>
     <link rel="icon" type="image/svg+xml" href="/logo_agrisat.jpg" />
+    <!-- Écran de démarrage : logo chargé en priorité et fond sombre dès le premier rendu. -->
+    <link rel="preload" as="image" href="/logo_MALTO.jpg" fetchpriority="high" />
+    <style>html, body { background: #12262B; }</style>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
