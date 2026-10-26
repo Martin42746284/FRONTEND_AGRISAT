@@ -12,6 +12,12 @@ import Analyses from './pages/Analyses';
 import Models from './pages/Models';
 import Admin from './pages/Admin';
 
+/**
+ * Présence minimale de l'écran de démarrage : le temps de voir STAR puis MALTO
+ * une première fois (les logos alternent ensuite tant que le chargement dure).
+ */
+const SPLASH_INTRO_MS = 2800;
+
 function Guard({ children, perm }: { children: JSX.Element; perm?: keyof (typeof ROLES)['admin']['can'] }) {
   const user = useApp((s) => s.user);
   if (!user) return <Navigate to="/connexion" replace />;
@@ -28,12 +34,21 @@ export default function App() {
   // L'écran de démarrage reste monté le temps de son fondu de sortie, une fois
   // les parcelles chargées (la carte est déjà rendue dessous).
   const [splashDone, setSplashDone] = useState(false);
+  // Les deux logos alternent en boucle tant que les parcelles ne sont pas
+  // chargées. Le fondu de sortie n'est déclenché qu'une fois l'introduction
+  // jouée, même si la carte est prête avant.
+  const [introDone, setIntroDone] = useState(false);
   useEffect(() => { void init(); }, [init]);
   useEffect(() => {
-    if (!ready || loadError) return;
+    const timer = window.setTimeout(() => setIntroDone(true), SPLASH_INTRO_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const splashLeaving = ready && !loadError && introDone;
+  useEffect(() => {
+    if (!splashLeaving) return;
     const timer = window.setTimeout(() => setSplashDone(true), 560);
     return () => window.clearTimeout(timer);
-  }, [ready, loadError]);
+  }, [splashLeaving]);
 
   const errorScreen = (
     <div className="boot">
@@ -70,7 +85,7 @@ export default function App() {
         </Routes>
       )}
       {ready && loadError && errorScreen}
-      {(!ready || (!loadError && !splashDone)) && <SplashScreen leaving={ready && !loadError} />}
+      {(!ready || (!loadError && !splashDone)) && <SplashScreen leaving={splashLeaving} />}
     </>
   );
 }
