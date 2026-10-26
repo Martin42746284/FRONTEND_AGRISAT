@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../store/useApp';
 import { useAggregate, useBase, useFinal } from '../store/selectors';
 import { CULTURE_BY_ID, ROLES, SEASON_BY_ID } from '../data/constants';
@@ -46,6 +46,13 @@ export default function MapPage() {
 
   const filtersOpen = useApp((s) => s.filtersOpen);
   const setFiltersOpen = useApp((s) => s.setFiltersOpen);
+
+  // Signale au CSS que le panneau de filtres flottant est ouvert, afin que la
+  // légende se décale et ne passe plus dessous.
+  useEffect(() => {
+    document.body.dataset.filters = filtersOpen ? 'open' : 'closed';
+    return () => { document.body.dataset.filters = 'closed'; };
+  }, [filtersOpen]);
 
   return (
     <div className="page page--map">

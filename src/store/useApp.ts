@@ -1,12 +1,17 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type {
-  Analysis, AuditEntry, Commune, CultureId, Filters, LatLng, Parcel, Region, Role, User,
+  Analysis, AuditEntry, Commune, CropResult, CultureId, Filters, LatLng, Parcel, Region, Role, User,
 } from '../types';
 import { AREA_MAX, DEFAULT_COLORS, DEFAULT_SEASON, PIPELINE_STEPS, CURRENT_MODEL, ROLES } from '../data/constants';
 import { api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectionResult, type ParcelUpdate, type AuditEntryCreate } from '../api/services';
-import { maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
+import { maltoToFrontend, maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
 import { centroidOf, isDuplicateVhrParcel, pointInPolygon, ringAreaHa } from '../lib/geometry';
+import { analyzedParcelIds, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
+import { isImportedKmlParcel, isManualParcel, REJECTED_PARCEL_SOURCE } from '../lib/parcel-sources';
+import {
+  addRejection, isDatabaseParcelId, isRejectedParcel, mergeRejections, type RejectedParcel,
+} from '../lib/rejections';
 
 export const DEFAULT_FILTERS: Filters = {
   cultures: [], mode: 'general', othersStyle: 'grise',
@@ -28,6 +33,8 @@ export interface TraceInfo {
 
 interface State {
   ready: boolean;
+  /** Message d'erreur du dernier chargement de la base ; `null` si tout va bien. */
+  loadError: string | null;
   parcels: Parcel[]; regions: Region[]; communes: Commune[];
   analyses: Analysis[]; users: User[]; audit: AuditEntry[];
 
@@ -47,6 +54,8 @@ interface State {
   drawing: boolean; drawMode: 'zone' | 'parcel'; draft: LatLng[]; zone: LatLng[] | null; manualParcelDraft: LatLng[] | null;
   toasts: Toast[];
   traceInfo: TraceInfo | null;
+  /** Contours automatiques supprimés, relus en base et conservés localement. */
+  rejectedParcels: RejectedParcel[];
   automaticDetection: AutomaticDetectionResult | null;
   automaticSearchCenter: LatLng | null;
   selectedAutomaticParcelId: string | null;
@@ -57,6 +66,8 @@ interface State {
   editingCoords: LatLng[] | null;
 
   init: () => Promise<void>;
+  /** Recharge les données de la base (bouton « Réessayer » après un échec). */
+  reload: () => Promise<void>;
   login: (role: Role) => void;
   logout: () => void;
   setFilters: (patch: Partial<Filters>) => void;
@@ -80,8 +91,19 @@ interface State {
   toast: (msg: string, tone?: Toast['tone']) => void;
   logAudit: (action: string, object: string) => void;
   correctParcel: (id: string, to: CultureId, note: string, kind: 'correction' | 'observation') => void;
-  rejectParcel: (id: string) => void;
+  rejectParcel: (id: string) => Promise<void>;
+  /** Retire la culture d'une parcelle et conserve la parcelle (contour, superficie, id). */
+  removeParcelCulture: (id: string) => Promise<void>;
   createAnalysis: (input: { zoneLabel: string; regionId?: string; communeId?: string; seasonId: string; zone?: LatLng[] | null }) => Analysis;
+  /** Identifiant de la parcelle en cours d'analyse unitaire (bouton « Analyser »). */
+  analyzingParcelId: string | null;
+  /**
+   * Analyse **une seule** parcelle : ni les parcelles voisines ne sont analysées,
+   * ni leurs données modifiées. Le résultat est enregistré en base ; une parcelle
+   * déjà analysée conserve ses données tant que l'utilisateur n'a pas confirmé
+   * la relance (`force`).
+   */
+  analyzeParcel: (id: string, options?: { force?: boolean }) => Promise<void>;
   addTracedParcels: (added: Parcel[], info: TraceInfo) => number;
   setAutomaticDetection: (result: AutomaticDetectionResult | null) => void;
   setAutomaticSearchCenter: (center: LatLng | null) => void;
@@ -99,6 +121,7 @@ export const useApp = create<State>()(
   persist(
     (set, get) => ({
       ready: false,
+      loadError: null,
       parcels: [], regions: [], communes: [], analyses: [], users: [], audit: [],
       user: null,
       colors: { ...DEFAULT_COLORS },
@@ -112,8 +135,10 @@ export const useApp = create<State>()(
       filtersOpen: false,
       setFiltersOpen: (v) => set({ filtersOpen: v }),
       drawing: false, drawMode: 'zone', draft: [], zone: null, manualParcelDraft: null,
+      analyzingParcelId: null,
       toasts: [],
       traceInfo: null,
+      rejectedParcels: [],
       automaticDetection: null,
       automaticSearchCenter: null,
       selectedAutomaticParcelId: null,
@@ -122,7 +147,24 @@ export const useApp = create<State>()(
 
       init: async () => {
         if (get().ready) return;
-        const db = await api.bootstrap();
+        await get().reload();
+      },
+
+      reload: async () => {
+        set({ loadError: null });
+        let db: Awaited<ReturnType<typeof api.bootstrap>>;
+        try {
+          db = await api.bootstrap();
+        } catch (error) {
+          // Une panne de la base n'est pas une base vide : on la montre à l'écran
+          // plutôt que d'afficher une carte sans parcelle et des compteurs à zéro.
+          console.error('[AgriSat] Chargement de la base impossible :', error);
+          set({
+            ready: true,
+            loadError: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
         // Charger aussi l'historique d'audit depuis le backend
         let audit: AuditEntry[] = [];
         try {
@@ -137,7 +179,19 @@ export const useApp = create<State>()(
         } catch (err) {
           console.warn('[AgriSat] Échec du chargement de l\'audit :', err);
         }
-        set({ parcels: db.parcels, regions: db.regions, communes: db.communes, analyses: db.analyses, users: db.users, audit, ready: true });
+        // Les suppressions locales (écrites avant le rechargement) et celles relues
+        // en base sont fusionnées : aucune ne doit être perdue si l'appel réseau a échoué.
+        const rejectedParcels = mergeRejections(get().rejectedParcels, db.rejectedParcels);
+        set({
+          // Filet de sécurité si la suppression serveur avait échoué : un contour
+          // automatique retiré ne réapparaît pas. Les parcelles manuelles sont
+          // conservées telles quelles (l'utilisateur peut redessiner au même endroit).
+          parcels: db.parcels.filter((p) => isManualParcel(p) || isImportedKmlParcel(p) || !isRejectedParcel(p, rejectedParcels)),
+          regions: db.regions, communes: db.communes, analyses: db.analyses,
+          users: db.users, audit,
+          rejectedParcels,
+          ready: true,
+        });
         // Ouverture directe sur la carte : profil analyste par défaut, modifiable depuis le menu utilisateur.
         if (!get().user) get().login('analyste');
       },
@@ -263,8 +317,12 @@ export const useApp = create<State>()(
 
       addTracedParcels: (added, info) => {
         const known = [...get().parcels];
+        const rejections = get().rejectedParcels;
         const fresh: Parcel[] = [];
         for (const candidate of added) {
+          // Un contour supprimé ne doit jamais être réinjecté par le traçage
+          // automatique, même si la tuile est retracée après un rechargement.
+          if (isRejectedParcel(candidate, rejections)) continue;
           if (known.some((parcel) => isDuplicateVhrParcel(parcel, candidate))) continue;
           fresh.push(candidate);
           known.push(candidate);
@@ -328,9 +386,177 @@ export const useApp = create<State>()(
         }
         get().logAudit(kind === 'observation' ? 'Saisie d’observation terrain' : 'Correction de classe', `Parcelle ${id}`);
       },
-      rejectParcel: (id) => {
-        set((s) => ({ parcels: s.parcels.map((p) => (p.id === id ? { ...p, rejected: true } : p)), selectedId: null }));
+      rejectParcel: async (id) => {
+        const s = get();
+        const parcel = s.parcels.find((p) => p.id === id);
+        if (!parcel) return;
+
+        // Masquage immédiat + mémorisation de l'empreinte : le contour ne sera
+        // pas retracé à l'écran pendant la session en cours.
+        set({
+          parcels: s.parcels.map((p) => (p.id === id ? { ...p, rejected: true } : p)),
+          rejectedParcels: addRejection(s.rejectedParcels, parcel),
+          selectedId: null,
+        });
         get().logAudit('Rejet de polygone', `Parcelle ${id}`);
+
+        // Parcelle enregistrée en base : suppression réelle de la ligne.
+        if (isDatabaseParcelId(id)) {
+          try {
+            await api.deleteParcel(id);
+            get().toast('Parcelle supprimée définitivement.', 'ok');
+          } catch (err) {
+            console.warn('[AgriSat] Suppression de la parcelle en base impossible :', err);
+            get().toast('Parcelle masquée, mais la suppression en base a échoué.', 'warn');
+          }
+          return;
+        }
+
+        // Contour automatique (tracé VHR, absent de la base) : on enregistre une
+        // suppression côté serveur pour qu'il ne réapparaisse pas au rechargement,
+        // sur ce navigateur comme sur les autres.
+        try {
+          await api.createParcel({
+            label: '',
+            coordinates: parcel.coords.map(([lat, lng]) => ({ lat, lng })),
+            center_lat: parcel.centroid[0],
+            center_lng: parcel.centroid[1],
+            surface_ha: parcel.areaHa,
+            culture_declared: '',
+            culture_detected: null,
+            ndvi_percentage: null,
+            ndre: null,
+            spectral_bands: null,
+            confidence: null,
+            verdict: 'Contour automatique supprimé',
+            details: 'Suppression persistée : ce contour ne doit plus être réaffiché.',
+            saison: null,
+            soil_type: null,
+            risk_factors: [],
+            recommendations: null,
+            data_source: REJECTED_PARCEL_SOURCE,
+            owner_name: '',
+            notes: 'Contour automatique supprimé par l’utilisateur.',
+            time_series_s2: [],
+            time_series_s1: [],
+            time_series_rain: [],
+            estimated_planting_date: null,
+            estimated_harvest_date: null,
+            days_since_planting: null,
+            growth_stage: null,
+            planting_confidence: null,
+            evi: null,
+            savi: null,
+            ndwi: null,
+            agro_score: null,
+            hybrid_score: null,
+            cnn_prob_barley: null,
+            cnn_prob_non_barley: null,
+          });
+          get().toast('Contour supprimé définitivement.', 'ok');
+        } catch (err) {
+          console.warn('[AgriSat] Suppression du contour non enregistrée côté serveur :', err);
+          get().toast('Contour masqué sur cet appareil ; la suppression serveur a échoué.', 'warn');
+        }
+      },
+
+      removeParcelCulture: async (id) => {
+        const s = get();
+        const parcel = s.parcels.find((p) => p.id === id);
+        if (!parcel) return;
+        const hasCulture = !!parcel.cultureDetail
+          || Object.values(parcel.results).some((result) => result.culture !== 'inconnue');
+        if (!hasCulture) {
+          s.toast('Aucune culture enregistrée à supprimer sur cette parcelle.', 'warn');
+          return;
+        }
+
+        // La parcelle et son contour sont conservés : seuls les résultats culturaux
+        // repassent en « non classé », comme une parcelle sans culture relue en base.
+        const seasonIds = Object.keys(parcel.results);
+        const cleared: Parcel = {
+          ...parcel,
+          cultureDetail: undefined,
+          results: Object.fromEntries(
+            (seasonIds.length ? seasonIds : [s.filters.seasonId])
+              .map((seasonId) => [seasonId, clearedCultureResult(seasonId)]),
+          ),
+        };
+        set({ parcels: s.parcels.map((p) => (p.id === id ? cleared : p)) });
+        get().logAudit('Suppression de la culture', `Parcelle ${id}`);
+
+        if (!isDatabaseParcelId(id)) {
+          get().toast('Culture retirée. La parcelle reste sur la carte.', 'ok');
+          return;
+        }
+
+        try {
+          await api.deleteParcelCulture(id);
+          get().toast('Culture supprimée en base — la parcelle est conservée.', 'ok');
+        } catch (err) {
+          console.warn('[AgriSat] Suppression de la culture impossible :', err);
+          // Le serveur fait foi : on remet la parcelle dans son état précédent.
+          set((st) => ({ parcels: st.parcels.map((p) => (p.id === id ? parcel : p)) }));
+          get().toast('Suppression de la culture impossible : la parcelle est inchangée.', 'danger');
+        }
+      },
+
+      analyzeParcel: async (id, options) => {
+        const s = get();
+        const parcel = s.parcels.find((p) => p.id === id);
+        if (!parcel) {
+          s.toast('Parcelle introuvable.', 'warn');
+          return;
+        }
+        if (s.analyzingParcelId) {
+          s.toast('Une analyse de parcelle est déjà en cours.', 'warn');
+          return;
+        }
+        set({ analyzingParcelId: id });
+        try {
+          // Seule la parcelle sélectionnée est transmise : les parcelles
+          // environnantes ne sont ni analysées ni modifiées.
+          const result = await api.analyzeParcel({
+            lat: parcel.centroid[0],
+            lng: parcel.centroid[1],
+            zoom: 17,
+            polygon: parcel.coords.map(([lat, lng]) => ({ lat, lng })),
+            parcelId: isDatabaseParcelId(parcel.id) ? parcel.id : null,
+            force: options?.force ?? false,
+          });
+
+          const [updated] = maltoToFrontend([result.parcelle], { regions: s.regions, communes: s.communes });
+          if (updated) {
+            // La ligne enregistrée remplace le contour affiché (identifiant de base
+            // pour une parcelle déjà en base, nouveau UUID sinon) ; les corrections
+            // terrain saisies par l'utilisateur sont conservées.
+            const newResult = Object.values(updated.results)[0];
+            const merged: Parcel = {
+              ...updated,
+              corrections: parcel.corrections,
+              results: {
+                ...parcel.results,
+                ...(newResult ? { [s.filters.seasonId]: { ...newResult, seasonId: s.filters.seasonId } } : {}),
+              },
+            };
+            set((st) => ({
+              parcels: [...st.parcels.filter((p) => p.id !== parcel.id), merged],
+              selectedId: merged.id,
+            }));
+            get().logAudit('Analyse de parcelle', `Parcelle ${merged.id}`);
+          }
+          get().toast(
+            result.created
+              ? 'Parcelle analysée et enregistrée en base.'
+              : 'Analyse terminée — les données de la parcelle sont à jour.',
+            'ok',
+          );
+        } catch (err) {
+          console.warn('[AgriSat] Analyse de parcelle impossible :', err);
+          get().toast(err instanceof Error ? err.message : 'Analyse de parcelle impossible.', 'danger');
+        } finally {
+          set({ analyzingParcelId: null });
+        }
       },
 
       createAnalysis: ({ zoneLabel, regionId, communeId, seasonId, zone }) => {
@@ -385,7 +611,11 @@ export const useApp = create<State>()(
                       logs: [...x.logs, { at: ended, level: 'info' as const, msg: 'Pipeline Malto terminé — tracé automatique + classification orge (modèles existants).' }],
                     } : x),
                 }));
-                get().toast(`Analyse ${id} terminée (Malto) : ${res.tracedCount} parcelles tracées, ${res.barleyCount} orge.`, 'ok');
+                get().toast(
+                  `Analyse ${id} terminée (Malto) : ${res.tracedCount} contour(s) automatique(s), `
+                  + `${res.manualCount} parcelle(s) manuelle(s), ${res.barleyCount} orge.`,
+                  'ok',
+                );
               }).catch((err) => {
                 const ended = new Date().toISOString();
                 set((st) => ({
@@ -443,15 +673,40 @@ export const useApp = create<State>()(
     }),
     {
       name: 'agri-mada-v1',
-      version: 2,
+      version: 3,
       migrate: (persistedState) => ({
         ...(persistedState as Pick<State, 'user' | 'colors' | 'colorsByUser' | 'threshold' | 'showCoverage'>),
+        rejectedParcels: (persistedState as Partial<State>).rejectedParcels ?? [],
         basemap: 'satellite' as const,
       }),
-      partialize: (s) => ({ user: s.user, colors: s.colors, colorsByUser: s.colorsByUser, threshold: s.threshold, basemap: s.basemap, showCoverage: s.showCoverage }),
+      partialize: (s) => ({
+        user: s.user, colors: s.colors, colorsByUser: s.colorsByUser, threshold: s.threshold,
+        basemap: s.basemap, showCoverage: s.showCoverage, rejectedParcels: s.rejectedParcels,
+      }),
     },
   ),
 );
+
+/**
+ * Résultat « non classé » d'une parcelle dont la culture vient d'être supprimée.
+ * Il garde la parcelle visible sur la carte (un contour sans résultat pour la saison
+ * courante serait masqué) sans réintroduire de culture.
+ */
+function clearedCultureResult(seasonId: string): CropResult {
+  const at = new Date().toISOString();
+  return {
+    seasonId,
+    culture: 'inconnue',
+    confidence: 0,
+    probs: {},
+    status: 'incertain',
+    analysisId: '—',
+    modelVersion: 'Aucune culture enregistrée',
+    processedAt: at,
+    observedFrom: at.slice(0, 10),
+    observedTo: at.slice(0, 10),
+  };
+}
 
 /** Centroïde arithmétique d'un anneau de sommets. */
 function avgPoint(coords: LatLng[]): LatLng {
@@ -497,6 +752,8 @@ interface MaltoPipelineResult {
   warnings: string[];
   scenes: number;
   tracedCount: number;
+  /** Parcelles dessinées à la main incluses dans la classification. */
+  manualCount: number;
   barleyCount: number;
   parcelCount: number;
   areaHa: number;
@@ -538,7 +795,9 @@ async function runMaltoPipeline(
       .map((p) => ({
         ...p,
         results: { ...p.results, [seasonId]: { ...p.results[DEFAULT_SEASON], seasonId } },
-      }));
+      }))
+      // Un contour supprimé par l'utilisateur ne revient ni sur la carte ni dans l'analyse.
+      .filter((p) => !isRejectedParcel(p, st.rejectedParcels));
     if (traced.length) {
       const existing = new Set(st.parcels.map((p) => p.id));
       const added = traced.filter((p) => !existing.has(p.id));
@@ -557,11 +816,43 @@ async function runMaltoPipeline(
     patchLog(`Tracé automatique indisponible : ${err instanceof Error ? err.message : String(err)}`, 'warn');
   }
 
-  // 2) Classification orge/non-orge (RF Sentinel-2) des contours tracés.
-  patchLog('Classification orge/non-orge (modèle RF Sentinel-2) sur les parcelles tracées…');
-  const traced_parcels = traced.slice(0, 500).map((p) => ({
-    coordinates: p.coords.map(([lat, lng]) => ({ lat, lng })),
-  }));
+  // 2) Classification orge/non-orge (RF Sentinel-2) des contours tracés
+  // automatiquement ET des parcelles tracées à la main dans le périmètre.
+  const current = getState();
+  const manualParcels = parcelsForAnalysis(
+    current.parcels,
+    { lat: center[0], lng: center[1], radiusM, zone },
+    current.rejectedParcels,
+  ).filter(isManualParcel);
+  // Parcelles déjà analysées : elles ne sont pas reclassées, leurs données
+  // enregistrées restent inchangées.
+  const alreadyAnalyzed = analyzedParcelIds(current.parcels);
+  const analysisParcels = [...manualParcels, ...traced].filter((p) => !alreadyAnalyzed.has(p.id));
+  const skippedCount = manualParcels.length + traced.length - analysisParcels.length;
+  patchLog(
+    `Classification orge/non-orge (RF Sentinel-2) sur ${traced.length} contour(s) automatique(s) `
+    + `et ${manualParcels.length} parcelle(s) tracée(s) manuellement…`,
+  );
+  if (skippedCount > 0) {
+    patchLog(
+      `${skippedCount} parcelle(s) déjà analysée(s) ignorée(s) : leurs données enregistrées restent inchangées.`,
+      'warn',
+    );
+  }
+  if (analysisParcels.length === 0) {
+    return {
+      warnings: ['Toutes les parcelles du périmètre ont déjà été analysées : aucune nouvelle analyse nécessaire.'],
+      scenes: 0,
+      tracedCount: traced.length,
+      manualCount: manualParcels.length,
+      barleyCount: 0,
+      parcelCount: current.parcels.filter((p) => p.results[seasonId] && (!zone || pointInPolygon(p.centroid, zone))).length,
+      areaHa: current.parcels
+        .filter((p) => p.results[seasonId] && (!zone || pointInPolygon(p.centroid, zone)))
+        .reduce((t, p) => t + p.areaHa, 0),
+    };
+  }
+  const traced_parcels = analysisParcels.slice(0, 500).map(toTracedParcelInput);
   const res = await api.analyzeSimple({
     latitude: center[0],
     longitude: center[1],
@@ -581,7 +872,7 @@ async function runMaltoPipeline(
     const flat: LatLng = [fy / ring.length, fx / ring.length];
     let best: Parcel | null = null;
     let bestD = Infinity;
-    for (const p of traced) {
+    for (const p of analysisParcels) {
       const dLat = (p.centroid[0] - flat[0]) * 111_000;
       const dLon = (p.centroid[1] - flat[1]) * 111_000 * Math.cos((flat[0] * Math.PI) / 180);
       const d = Math.hypot(dLat, dLon);
@@ -632,8 +923,9 @@ async function runMaltoPipeline(
   );
   return {
     warnings: res.warnings ?? [],
-    scenes: typeof res.candidatesClassified === 'number' ? res.candidatesClassified : traced.length,
+    scenes: typeof res.candidatesClassified === 'number' ? res.candidatesClassified : analysisParcels.length,
     tracedCount: traced.length,
+    manualCount: manualParcels.length,
     barleyCount,
     parcelCount: scoped.length,
     areaHa: scoped.reduce((t, p) => t + p.areaHa, 0),

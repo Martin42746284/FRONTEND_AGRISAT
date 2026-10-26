@@ -6,6 +6,7 @@ import { normalize } from '../lib/format';
 import { api } from '../api/services';
 import { maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
 import { maltoToFrontend, type MaltoParcel } from '../api/maltoAdapter';
+import { parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
 
 const NATIONAL: [[number, number], [number, number]] = [[-25.8, 43.0], [-11.8, 50.7]];
 
@@ -29,6 +30,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze: () => 
   const addTracedParcels = useApp((s) => s.addTracedParcels);
   const toast = useApp((s) => s.toast);
   const parcels = useApp((s) => s.parcels);
+  const rejectedParcels = useApp((s) => s.rejectedParcels);
   const automaticDetection = useApp((s) => s.automaticDetection);
   const setAutomaticDetection = useApp((s) => s.setAutomaticDetection);
   const selectedAutomaticParcelId = useApp((s) => s.selectedAutomaticParcelId);
@@ -206,20 +208,13 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze: () => 
     selectAutomaticParcel(null);
     setPending(true);
     try {
-      // Envoyer en priorité les contours VHR déjà tracés autour du centre ; sinon,
-      // le backend déclenchera sa cascade de découverte de parcelles.
-      const scale = Math.max(Math.abs(Math.cos((lat * Math.PI) / 180)), 0.1);
-      const tracedParcels = parcels
-        .filter((parcel) => Object.values(parcel.results).some((result) => result.modelVersion.includes('Delineate Anything')))
-        .map((parcel) => {
-          const east = (parcel.centroid[1] - lng) * 111_320 * scale;
-          const north = (parcel.centroid[0] - lat) * 110_574;
-          return { parcel, distance: Math.hypot(east, north) };
-        })
-        .filter(({ distance }) => distance <= radiusM + 300)
-        .sort((a, b) => a.distance - b.distance)
-        .slice(0, 500)
-        .map(({ parcel }) => ({ coordinates: parcel.coords.map(([pointLat, pointLng]) => ({ lat: pointLat, lng: pointLng })) }));
+      // Contours automatiques ET parcelles tracées manuellement : les deux
+      // doivent être classés, pas seulement les tracés VHR.
+      const tracedParcels = parcelsForAnalysis(
+        parcels,
+        { lat, lng, radiusM },
+        rejectedParcels,
+      ).map(toTracedParcelInput);
       const result = await api.detectParcels({
         lat, lng, radiusKm: radiusM / 1000,
         baseTemperature: base, threshold, periodDays: period,

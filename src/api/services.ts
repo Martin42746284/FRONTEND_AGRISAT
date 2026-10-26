@@ -6,6 +6,7 @@
  *
  * Routes Malto utilisées :
  *   bootstrap()       → GET /api/parcelles + GET /api/zone-parcels (parcelles réelles)
+ *   analyzeParcel()  → POST /api/parcelles/analyze (analyse d'une seule parcelle)
  *   createExport(f)   → simulation locale (route absente côté Malto)
  *   reportParcel(...) → simulation locale (route absente côté Malto)
  *
@@ -15,12 +16,15 @@
 import type { Analysis, AuditEntry, Commune, Parcel, Region, User } from '../types';
 import { request, API_BASE } from './http';
 import { bootstrapReal } from './realBootstrap';
+import type { MaltoParcel } from './maltoAdapter';
+import type { RejectedParcel } from '../lib/rejections';
 
 /** Réponse du bootstrap pour le store (mêmes champs que l'ancien FakeDb). */
 export interface BootstrapDb {
   regions: Region[];
   communes: Commune[];
   parcels: Parcel[];
+  rejectedParcels: RejectedParcel[];
   analyses: Analysis[];
   users: User[];
   audit: AuditEntry[];
@@ -55,7 +59,7 @@ export interface DeployedModels {
     modele_present?: boolean;
     modes?: string[];
   };
-};
+}
 
 /** Payload PATCH /api/parcelles/{id} — correction humaine d'une parcelle. */
 export interface ParcelUpdate {
@@ -265,15 +269,40 @@ export interface CreateMaltoParcelPayload {
   cnn_prob_non_barley: null;
 }
 
+/** Payload POST /api/parcelles/analyze — analyse d'une seule parcelle. */
+export interface AnalyzeParcelPayload {
+  lat: number;
+  lng: number;
+  zoom?: number;
+  /** Contour de la parcelle : seule geometrie analysée, jamais les parcelles voisines. */
+  polygon: Array<{ lat: number; lng: number }>;
+  /** Identifiant de la ligne `parcelles` à mettre à jour (absent : contour pas encore en base). */
+  parcelId?: string | null;
+  /** Relance explicite : remplace les données d'une parcelle déjà analysée. */
+  force?: boolean;
+}
+
+export interface AnalyzeParcelResult {
+  /** Résultat brut de l'analyse satellite (indices, verdict, séries temporelles…). */
+  analysis: Record<string, unknown>;
+  /** Ligne `parcelles` enregistrée (créée ou mise à jour). */
+  parcelle: MaltoParcel;
+  /** Vrai si la ligne n'existait pas encore et vient d'être créée. */
+  created: boolean;
+  /** Vrai si la parcelle avait déjà été analysée (données conservées). */
+  already_analyzed: boolean;
+}
+
 export const api = {
-  /** Charge les données réelles de la base au démarrage (aucune donnée fictive). */
+  /**
+   * Charge les données réelles de la base au démarrage (aucune donnée fictive).
+   *
+   * L'échec est propagé : une base momentanément indisponible ne doit pas ressembler
+   * à une base vide (carte sans parcelle, compteurs à zéro). L'appelant affiche
+   * l'erreur et propose de réessayer.
+   */
   async bootstrap(): Promise<BootstrapDb> {
-    try {
-      return await bootstrapReal();
-    } catch (err) {
-      console.error('[AgriSat] Bootstrap Malto échoué — pas de données à afficher :', err);
-      return { regions: [], communes: [], parcels: [], analyses: [], users: [], audit: [] };
-    }
+    return bootstrapReal();
   },
 
   /** Malto n'expose pas encore de route d'export — simulation locale conservée. */
@@ -311,6 +340,21 @@ export const api = {
   },
 
   /**
+   * Analyse **une seule** parcelle (bouton « Analyser » de la fiche parcel).
+   *
+   * Le contour transmis est le seul objet analysé : les parcelles voisines ne sont
+   * ni cherchées ni modifiées. Le résultat est enregistré en base ; une parcelle
+   * déjà analysée conserve ses données (le serveur répond 409) sauf si
+   * `force` est demandé (relance explicite de l'utilisateur).
+   */
+  async analyzeParcel(payload: AnalyzeParcelPayload): Promise<AnalyzeParcelResult> {
+    return request<AnalyzeParcelResult>('/api/parcelles/analyze', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }, ANALYZE_PARCEL_TIMEOUT_MS);
+  },
+
+  /**
    * Tracés VHR (modèle Delineate Anything JECAM) — délimitation automatique de parcelles.
    * `signal` permet d'annuler la requête (démontage, changement de zone).
    */
@@ -327,7 +371,20 @@ export const api = {
       return request<Record<string, unknown>>('/api/parcelles', {
         method: 'POST',
         body: JSON.stringify(payload),
-      }, 60_000);
+      }, 30_000);
+    },
+
+    /** Supprime définitivement une parcelle enregistrée (ligne de la table `parcelles`). */
+    async deleteParcel(id: string): Promise<void> {
+      await request<void>(`/api/parcelles/${encodeURIComponent(id)}`, { method: 'DELETE' }, 30_000);
+    },
+
+    /**
+     * Supprime uniquement la culture d'une parcelle : le contour, la superficie et
+     * l'identité de la parcelle restent en base et sur la carte.
+     */
+    async deleteParcelCulture(id: string): Promise<void> {
+      await request<void>(`/api/parcelles/${encodeURIComponent(id)}/culture`, { method: 'DELETE' }, 30_000);
     },
 
   /** Route absente côté Malto — simulation locale conservée. */
@@ -343,25 +400,25 @@ export const api = {
     }
   },
     /** Modifie une parcelle (correction humaine de la culture détectée). */
-  async correctParcelle(id: string, payload: ParcelUpdate): Promise<Record<string, unknown>> {
-    return request<Record<string, unknown>>(`/api/parcelles/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    }, 30_000);
-  },
+    async correctParcelle(id: string, payload: ParcelUpdate): Promise<Record<string, unknown>> {
+      return request<Record<string, unknown>>(`/api/parcelles/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }, 30_000);
+    },
 
-  /** Envoie une entrée d'audit au backend. */
-  async logAudit(payload: AuditEntryCreate): Promise<AuditEntryDto> {
-    return request<AuditEntryDto>('/api/audit', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }, 30_000);
-  },
+    /** Envoie une entrée d'audit au backend. */
+    async logAudit(payload: AuditEntryCreate): Promise<AuditEntryDto> {
+      return request<AuditEntryDto>('/api/audit', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }, 30_000);
+    },
 
-  /** Liste les entrées d'audit récentes. */
-  async getAudit(): Promise<AuditEntryDto[]> {
-    return request<AuditEntryDto[]>('/api/audit');
-  },
+    /** Liste les entrées d'audit récentes. */
+    async getAudit(): Promise<AuditEntryDto[]> {
+      return request<AuditEntryDto[]>('/api/audit');
+    },
 };
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -370,4 +427,5 @@ const EXPORT_REPORT_FALLBACK_MS = 400;
 // Les appels d'inférence Malto sont longs (scènes Sentinel-2 + modèle) : timeouts dédiés.
 const ANALYZE_TIMEOUT_MS = 240_000;
 const DETECT_PARCELS_TIMEOUT_MS = 600_000;
+const ANALYZE_PARCEL_TIMEOUT_MS = 240_000;
 const ZONE_PARCELS_TIMEOUT_MS = 600_000; // mode « mix » ≈ 5–7 min

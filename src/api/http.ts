@@ -42,7 +42,9 @@ export async function request<T>(path: string, init: RequestInit = {}, timeoutMs
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => null);
-      throw new Error(`Malto ${res.status} ${res.statusText}${detail?.detail ? ` — ${detail.detail}` : ''}`);
+      // Le backend renvoie `{error: "…"}` ou `{detail: "…"}` en français : on relaie tel quel.
+      const reason = detail?.detail ?? detail?.error;
+      throw new Error(`Malto ${res.status} ${res.statusText}${reason ? ` — ${reason}` : ''}`);
     }
     return (res.status === 204 ? undefined : await res.json()) as T;
   } catch (err) {
