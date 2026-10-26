@@ -183,7 +183,7 @@ export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors
   );
 }
 
-export default function ParcelDrawer() {
+export default function ParcelDrawer({ onAnalyze, canLaunch }: { onAnalyze?: () => void; canLaunch?: boolean }) {
   const id = useApp((s) => s.selectedId);
   const parcels = useApp((s) => s.parcels);
   const seasonId = useApp((s) => s.filters.seasonId);
@@ -198,6 +198,9 @@ export default function ParcelDrawer() {
   const analyzingParcelId = useApp((s) => s.analyzingParcelId);
   const { startEditParcel, cancelEditParcel, saveEditParcel } = useApp.getState();
   const [modal, setModal] = useState<ModalKind | null>(null);
+// Prop defaults for compatibility with MapToolbar usage
+const analyzeAction = onAnalyze || (() => alert('Analyse non disponible'));
+const launchAllowed = canLaunch !== false;
 
   const p = useMemo(() => parcels.find((x) => x.id === id), [parcels, id]);
   if (!p) return null;
@@ -219,7 +222,6 @@ export default function ParcelDrawer() {
     <aside className="drawer" aria-label="Fiche de la parcelle">
       <header className="drawer__head">
         <div>
-          <h2>{p.id}</h2>
           <p>{commune?.name} · {region?.name}</p>
         </div>
         <button className="icon-btn" onClick={() => select(null)} aria-label="Fermer la fiche"><X size={18} /></button>
@@ -244,6 +246,14 @@ export default function ParcelDrawer() {
       )}
 
       <div className="drawer__body">
+        <div className="drawer__top" aria-label="Aperçu de la parcelle">
+          <Shape p={p} color={hasCulture && cultureId ? colors[cultureId] : colors.inconnue} />
+          <dl className="kv">
+            <dt>Superficie estimée</dt><dd className="big">{fmtHa(p.areaHa)}</dd>
+            {r && <><dt>Statut</dt><dd><StatusBadge status={r.status} /></dd></>}
+          </dl>
+        </div>
+
         {detail ? (
           <CulturePanel detail={detail} colors={colors} />
         ) : !r || r.culture === 'inconnue' ? (
@@ -293,13 +303,6 @@ export default function ParcelDrawer() {
 
         <details className="drawer__more" open={!hasCulture}>
           <summary>Détails de la parcelle</summary>
-          <div className="drawer__top">
-            <Shape p={p} color={hasCulture && cultureId ? colors[cultureId] : colors.inconnue} />
-            <dl className="kv">
-              <dt>Superficie estimée</dt><dd className="big">{fmtHa(p.areaHa)}</dd>
-              {r && <><dt>Statut</dt><dd><StatusBadge status={r.status} /></dd></>}
-            </dl>
-          </div>
           <dl className="kv kv--wide">
             {commune && <><dt>Commune</dt><dd>{commune.name}</dd></>}
             {region && <><dt>Région</dt><dd>{region.name}</dd></>}
