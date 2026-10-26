@@ -6,6 +6,7 @@ import { ROLES } from '../data/constants';
 import { activeFilterCount } from '../lib/filter';
 import type { Role } from '../types';
 import ParcelDrawer from './ParcelDrawer';
+import MapToolbar from './MapToolbar';
 import ExportMenu from './ExportMenu';
 import { Toasts } from './ui';
 
@@ -99,6 +100,7 @@ export default function AppShell() {
       </div>
 
       <ParcelDrawer />
+      <MapToolbar canLaunch={can?.analyze !== undefined || true} onAnalyze={() => alert('Analyse non implémentée dans ce layout')} />
       <Toasts />
     </div>
   );
