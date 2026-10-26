@@ -118,6 +118,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .tablewrap { overflow-x: auto; } .tablewrap--page { background: #fff; border: 1px solid var(--line); border-radius: var(--r); }
 .table { width: 100%; border-collapse: collapse; font-size: 13.5px; } .table th { text-align: left; font-weight: 600; color: var(--ink-2); font-size: 12.5px; padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--panel); white-space: nowrap; } .table td { padding: 8px 12px; border-bottom: 1px solid var(--line-2); } .table th.num, .table td.num { text-align: right; }
 .table--rows tbody tr { cursor: pointer; } .table--rows tbody tr:hover, .table tr.is-current { background: var(--accent-soft); }
+.table th.pick, .table td.pick { width: 34px; padding-right: 0; } .table td.pick input { cursor: pointer; }
+.table td.cell-actions { display: flex; align-items: center; gap: 6px; white-space: nowrap; border-bottom: 0 !important; }
 .th-btn { background: none; border: 0; font: inherit; font-weight: 600; color: inherit; display: inline-flex; gap: 4px; align-items: center; padding: 0; }
 .conf-cell { display: flex; align-items: center; gap: 8px; min-width: 130px; border-bottom: 0 !important; } .conf-cell span { font-size: 12.5px; width: 40px; text-align: right; }
 .pager { display: flex; gap: 12px; align-items: center; justify-content: flex-end; padding: 12px 0; font-size: 13px; color: var(--ink-2); }

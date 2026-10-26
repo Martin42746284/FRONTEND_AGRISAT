@@ -1,12 +1,10 @@
 import type { LatLng, Parcel } from '../types';
 import { M_PER_DEG_LAT, mPerDegLng, pointInPolygon } from './geometry';
-import { isAutomaticOutline, isManualParcel } from './parcel-sources';
-import { isRejectedParcel, type RejectedParcel } from './rejections';
+import { isImportedKmlParcel, isManualParcel } from './parcel-sources';
+import { isDatabaseParcelId, isRejectedParcel, type RejectedParcel } from './rejections';
 
 /** Plafond du backend pour `traced_parcels` (MAX_TRACED_PARCELS). */
 export const MAX_ANALYSIS_PARCELS = 500;
-/** Une parcelle dont le centre est un peu au-delà du rayon peut encore le recouper. */
-const RADIUS_MARGIN_M = 300;
 
 export interface AnalysisScope {
   lat: number;
@@ -42,30 +40,35 @@ export function analyzedParcelIds(parcels: Parcel[]): Set<string> {
 
 /**
  * Parcelles à envoyer au backend pour classification : contours tracés
- * automatiquement (VHR/JECAM) **et** parcelles tracées à la main, dédupliquées
- * par le store, triées de la plus proche du centre à la plus éloignée.
+ * automatiquement (VHR/JECAM), parcelles tracées à la main **et** parcelles
+ * enregistrées dans la base (imports KML notamment), dédupliquées par le store,
+ * triées de la plus proche du centre à la plus éloignée.
  *
  * Les contours supprimés par l'utilisateur sont écartés, qu'ils le soient dans
- * cette session (`rejected`) ou via une suppression persistée (empreinte).
+ * cette session (`rejected`) ou via une suppression persistée (empreinte) — sauf
+ * les délimitations explicites (tracé manuel, import KML), qui font foi.
  * Les parcelles déjà analysées sont écartées également : leurs données
  * enregistrées ne doivent plus être modifiées automatiquement.
+ *
+ * Seules les parcelles **situées dans le rayon** sont retenues : c'est leur
+ * centre qui doit tomber dans le disque (ou dans le périmètre dessiné s'il y en
+ * a un). Une parcelle qui ne fait que déborder sur le rayon n'est pas analysée ;
+ * aucune marge n'est appliquée au-delà de `radiusM`.
  */
 export function parcelsForAnalysis(
   parcels: Parcel[],
   scope: AnalysisScope,
   rejections: RejectedParcel[] = [],
 ): Parcel[] {
-  const maxDistanceM = scope.radiusM + RADIUS_MARGIN_M;
-
   return parcels
     .flatMap((parcel) => {
       const manual = isManualParcel(parcel);
       if (parcel.rejected) return [];
-      // Une parcelle redessinée à la main au même endroit reste analysable :
-      // seuls les contours automatiques sont concernés par les suppressions.
-      if (!manual && isRejectedParcel(parcel, rejections)) return [];
-      if (!manual && !isAutomaticOutline(parcel)) return [];
+      // Une parcelle redessinée à la main ou délimitée par un import KML reste
+      // analysable : seuls les contours automatiques sont concernés par les suppressions.
+      if (!manual && !isImportedKmlParcel(parcel) && isRejectedParcel(parcel, rejections)) return [];
       // Déjà analysée : on ne recalcule rien, les données en base restent valables.
+      // Les lignes de la base encore sans résultat (contours importés) passent, elles.
       if (isAnalyzedParcel(parcel)) return [];
       if (scope.zone && scope.zone.length >= 3) {
         if (!pointInPolygon(parcel.centroid, scope.zone)) return [];
@@ -73,7 +76,7 @@ export function parcelsForAnalysis(
       const east = (parcel.centroid[1] - scope.lng) * mPerDegLng(scope.lat);
       const north = (parcel.centroid[0] - scope.lat) * M_PER_DEG_LAT;
       const distanceM = Math.hypot(east, north);
-      if (distanceM > maxDistanceM) return [];
+      if (distanceM > scope.radiusM) return [];
       return [{ parcel, distanceM }];
     })
     .sort((a, b) => a.distanceM - b.distanceM)
@@ -82,8 +85,12 @@ export function parcelsForAnalysis(
 }
 
 /** Forme attendue par `tracedParcels` / `traced_parcels` côté backend. */
-export function toTracedParcelInput(parcel: Parcel): { coordinates: Array<{ lat: number; lng: number }> } {
+export function toTracedParcelInput(parcel: Parcel): { id?: string; coordinates: Array<{ lat: number; lng: number }> } {
   return {
+    // Identifiant de la ligne `parcelles` quand la parcelle y est déjà enregistrée
+    // (import KML, tracé manuel) : le résultat d'analyse complète cette ligne au
+    // lieu d'en créer une seconde au même endroit.
+    ...(isDatabaseParcelId(parcel.id) ? { id: parcel.id } : {}),
     coordinates: parcel.coords.map(([lat, lng]) => ({ lat, lng })),
   };
 }

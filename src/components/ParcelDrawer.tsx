@@ -74,6 +74,13 @@ function NdviSpark({ points }: { points: VegetationPoint[] }) {
 /** Fiche culture : ce qui est enregistré en base pour la parcelle, avant tout détail de contour. */
 export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors: Record<CultureId, string> }) {
   const cultureId = mapCulture(detail.detected ?? detail.declared);
+  // Libellé brut du modèle en pastille : on n'affiche plus l'identique (libellé
+  // « Orge » ou identifiant `orge`, `sol_nu`…) ni l'identifiant de la culture
+  // retenue, qui apparaissait comme une seconde classe contradictoire.
+  const raw = detail.detected?.trim() ?? '';
+  const rawDetected = raw && raw !== CULTURE_BY_ID[cultureId].label && raw.toLowerCase() !== cultureId
+    ? raw
+    : null;
   const scores = [
     { label: 'Orge (CNN)', value: detail.cnnProbBarley },
     { label: 'Non-orge (CNN)', value: detail.cnnProbNonBarley },
@@ -88,9 +95,7 @@ export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors
         <div className="culture-line">
           <Swatch color={colors[cultureId]} size={14} />
           <strong>{CULTURE_BY_ID[cultureId].label}</strong>
-          {detail.detected && detail.detected !== CULTURE_BY_ID[cultureId].label && (
-            <Badge tone="muted">{detail.detected}</Badge>
-          )}
+          {rawDetected && <Badge tone="muted">{rawDetected}</Badge>}
         </div>
         <dl className="kv kv--wide">
           {detail.confidence != null && <><dt>Confiance du modèle</dt><dd>{fmtScore(detail.confidence)}</dd></>}

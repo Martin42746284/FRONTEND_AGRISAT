@@ -8,6 +8,7 @@ import { api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectio
 import { maltoToFrontend, maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
 import { centroidOf, isDuplicateVhrParcel, pointInPolygon, ringAreaHa } from '../lib/geometry';
 import { analyzedParcelIds, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
+import { correctionText, withCorrectedClass } from '../lib/culture-sync';
 import { isImportedKmlParcel, isManualParcel, REJECTED_PARCEL_SOURCE } from '../lib/parcel-sources';
 import {
   addRejection, isDatabaseParcelId, isRejectedParcel, mergeRejections, type RejectedParcel,
@@ -58,6 +59,8 @@ interface State {
   rejectedParcels: RejectedParcel[];
   automaticDetection: AutomaticDetectionResult | null;
   automaticSearchCenter: LatLng | null;
+  /** Rayon de l'analyse automatique, en mètres : il définit la zone affichée sur la carte. */
+  automaticSearchRadius: number | null;
   selectedAutomaticParcelId: string | null;
 
   /** Édition du contour d'une parcelle (double-clic sur la parcelle dans la carte). */
@@ -91,7 +94,13 @@ interface State {
   toast: (msg: string, tone?: Toast['tone']) => void;
   logAudit: (action: string, object: string) => void;
   correctParcel: (id: string, to: CultureId, note: string, kind: 'correction' | 'observation') => void;
-  rejectParcel: (id: string) => Promise<void>;
+  /**
+   * Supprime une parcelle (masquage immédiat + suppression en base).
+   * `silent` évite le retour utilisateur et l'audit unitaires, pour une suppression en lot.
+   */
+  rejectParcel: (id: string, options?: { silent?: boolean }) => Promise<boolean>;
+  /** Supprime plusieurs parcelles en une fois, avec un seul retour utilisateur. */
+  deleteParcels: (ids: string[]) => Promise<void>;
   /** Retire la culture d'une parcelle et conserve la parcelle (contour, superficie, id). */
   removeParcelCulture: (id: string) => Promise<void>;
   createAnalysis: (input: { zoneLabel: string; regionId?: string; communeId?: string; seasonId: string; zone?: LatLng[] | null }) => Analysis;
@@ -107,6 +116,7 @@ interface State {
   addTracedParcels: (added: Parcel[], info: TraceInfo) => number;
   setAutomaticDetection: (result: AutomaticDetectionResult | null) => void;
   setAutomaticSearchCenter: (center: LatLng | null) => void;
+  setAutomaticSearchRadius: (radiusM: number | null) => void;
   selectAutomaticParcel: (id: string | null) => void;
   relaunchAnalysis: (id: string) => void;
   setUserRole: (id: string, role: Role) => void;
@@ -141,6 +151,7 @@ export const useApp = create<State>()(
       rejectedParcels: [],
       automaticDetection: null,
       automaticSearchCenter: null,
+      automaticSearchRadius: null,
       selectedAutomaticParcelId: null,
       editingParcelId: null,
       editingCoords: null,
@@ -333,6 +344,7 @@ export const useApp = create<State>()(
       },
       setAutomaticDetection: (result) => set({ automaticDetection: result }),
       setAutomaticSearchCenter: (center) => set({ automaticSearchCenter: center }),
+      setAutomaticSearchRadius: (radiusM) => set({ automaticSearchRadius: radiusM }),
       selectAutomaticParcel: (id) => set({ selectedAutomaticParcelId: id }),
 
       toast: (msg, tone = 'info') => {
@@ -357,6 +369,10 @@ export const useApp = create<State>()(
         const s = get();
         const seasonId = s.filters.seasonId;
         const by = s.user?.name ?? 'Inconnu';
+        // Toute la fiche suit la classe retenue : sans ces textes, une parcelle
+        // corrigée en « Orge » continuait d'afficher « Non-orge » (verdict,
+        // classe détectée et explication enregistrés par le modèle).
+        const text = correctionText(to, note, kind);
         set({
           parcels: s.parcels.map((p) => {
             if (p.id !== id) return p;
@@ -364,6 +380,7 @@ export const useApp = create<State>()(
             if (!r) return p;
             return {
               ...p,
+              cultureDetail: withCorrectedClass(p.cultureDetail, text),
               results: {
                 ...p.results,
                 [seasonId]: { ...r, culture: to, status: kind === 'observation' ? 'verifie_terrain' : 'corrige', correctedBy: by },
@@ -372,24 +389,36 @@ export const useApp = create<State>()(
             };
           }),
         });
-        // Persister vers le backend
+        // Persister vers le backend. La fiche affichée est relue depuis ces mêmes
+        // champs : une correction non enregistrée doit être signalée, pas tue.
+        if (!isDatabaseParcelId(id)) {
+          get().toast('Correction gardée pour cette session : la parcelle n’est pas en base de données.', 'warn');
+          get().logAudit(kind === 'observation' ? 'Saisie d’observation terrain' : 'Correction de classe', `Parcelle ${id}`);
+          return;
+        }
         try {
           const r = s.parcels.find((p) => p.id === id)?.results[seasonId];
           await api.correctParcelle(id, {
-            culture_detected: to,
+            // Libellé et non identifiant de culture : la base stocke « Orge »,
+            // « Pomme de terre », etc. (l'identifiant `pomme_de_terre` n'était
+            // relu comme aucune culture connue au rechargement).
+            culture_detected: text.label,
             confidence: r ? Math.round(r.confidence * 100) : undefined,
-            verdict: kind === 'observation' ? 'Observation terrain' : 'Correction humaine',
+            verdict: text.verdict,
+            details: text.details,
             saison: seasonId,
           });
         } catch (err) {
           console.warn('[AgriSat] Échec de la correction de parcelle :', err);
+          get().toast('Correction affichée mais non enregistrée en base de données : relancez la correction.', 'danger');
         }
         get().logAudit(kind === 'observation' ? 'Saisie d’observation terrain' : 'Correction de classe', `Parcelle ${id}`);
       },
-      rejectParcel: async (id) => {
+      rejectParcel: async (id, options) => {
+        const silent = options?.silent === true;
         const s = get();
         const parcel = s.parcels.find((p) => p.id === id);
-        if (!parcel) return;
+        if (!parcel) return false;
 
         // Masquage immédiat + mémorisation de l'empreinte : le contour ne sera
         // pas retracé à l'écran pendant la session en cours.
@@ -398,18 +427,19 @@ export const useApp = create<State>()(
           rejectedParcels: addRejection(s.rejectedParcels, parcel),
           selectedId: null,
         });
-        get().logAudit('Rejet de polygone', `Parcelle ${id}`);
+        if (!silent) get().logAudit('Rejet de polygone', `Parcelle ${id}`);
 
         // Parcelle enregistrée en base : suppression réelle de la ligne.
         if (isDatabaseParcelId(id)) {
           try {
             await api.deleteParcel(id);
-            get().toast('Parcelle supprimée définitivement.', 'ok');
+            if (!silent) get().toast('Parcelle supprimée définitivement.', 'ok');
+            return true;
           } catch (err) {
             console.warn('[AgriSat] Suppression de la parcelle en base impossible :', err);
-            get().toast('Parcelle masquée, mais la suppression en base a échoué.', 'warn');
+            if (!silent) get().toast('Parcelle masquée, mais la suppression en base a échoué.', 'warn');
+            return false;
           }
-          return;
         }
 
         // Contour automatique (tracé VHR, absent de la base) : on enregistre une
@@ -453,11 +483,44 @@ export const useApp = create<State>()(
             cnn_prob_barley: null,
             cnn_prob_non_barley: null,
           });
-          get().toast('Contour supprimé définitivement.', 'ok');
+          if (!silent) get().toast('Contour supprimé définitivement.', 'ok');
+          return true;
         } catch (err) {
           console.warn('[AgriSat] Suppression du contour non enregistrée côté serveur :', err);
-          get().toast('Contour masqué sur cet appareil ; la suppression serveur a échoué.', 'warn');
+          if (!silent) get().toast('Contour masqué sur cet appareil ; la suppression serveur a échoué.', 'warn');
+          return false;
         }
+      },
+
+      /**
+       * Suppression en lot (page « Parcelles »). Chaque parcelle passe par le même
+       * chemin qu'une suppression unitaire ; l'utilisateur n'a qu'un seul retour.
+       */
+      deleteParcels: async (ids) => {
+        const s = get();
+        const wanted = new Set(ids);
+        const targets = s.parcels.filter((p) => wanted.has(p.id) && !p.rejected);
+        if (!targets.length) {
+          s.toast('Aucune parcelle à supprimer.', 'warn');
+          return;
+        }
+        let failures = 0;
+        for (const target of targets) {
+          if (!(await get().rejectParcel(target.id, { silent: true }))) failures += 1;
+        }
+        const removed = targets.length - failures;
+        get().logAudit(
+          'Suppression de parcelles',
+          targets.length === 1 ? `Parcelle ${targets[0].id}` : `${removed} parcelle(s) sur ${targets.length}`,
+        );
+        if (failures) {
+          get().toast(`${removed} parcelle(s) supprimée(s), ${failures} suppression(s) en base en échec.`, 'warn');
+          return;
+        }
+        get().toast(
+          targets.length === 1 ? 'Parcelle supprimée.' : `${removed} parcelles supprimées.`,
+          'ok',
+        );
       },
 
       removeParcelCulture: async (id) => {

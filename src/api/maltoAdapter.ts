@@ -91,15 +91,30 @@ const CULTURE_MAP: Record<string, CultureId> = {
   'manioc': 'manioc', 'cassava': 'manioc',
   'pomme de terre': 'pomme_de_terre', 'potato': 'pomme_de_terre', 'pdt': 'pomme_de_terre',
   'jachère': 'jachere', 'jachere': 'jachere', 'fallow': 'jachere',
-  'sol nu': 'sol_nu', 'bare': 'sol_nu', 'bare soil': 'sol_nu',
+  'sol nu': 'sol_nu', 'sol_nu': 'sol_nu', 'bare': 'sol_nu', 'bare soil': 'sol_nu',
   'végétation': 'vegetation', 'vegetation': 'vegetation',
   'eau': 'eau', 'water': 'eau',
   'unknown': 'inconnue', 'inconnue': 'inconnue',
+  // Identifiants de culture : les corrections ont été enregistrées avec l'id
+  // (`sol_nu`, `pomme_de_terre`…) par une version antérieure de l'application.
+  // Sans ces entrées, une parcelle corrigée « Sol nu » se relisait « Autre culture ».
+  'pomme_de_terre': 'pomme_de_terre',
+  'autre': 'autre',
+  'autre culture': 'autre',
 };
+
+/**
+ * Culture reconnue depuis un libellé ou un identifiant de culture, ou `null`
+ * quand la valeur n'en désigne aucune (« Non-orge », texte libre…).
+ */
+export function knownCulture(raw: string | null | undefined): CultureId | null {
+  if (!raw) return null;
+  return CULTURE_MAP[raw.trim().toLowerCase()] ?? null;
+}
 
 export function mapCulture(raw: string | null | undefined): CultureId {
   if (!raw) return 'inconnue';
-  return CULTURE_MAP[raw.trim().toLowerCase()] ?? 'autre';
+  return knownCulture(raw) ?? 'autre';
 }
 
 /** Extrait la probabilité d'orge du verdict Malto, ex. «…probabilité d'orge 54%». */
@@ -223,11 +238,15 @@ export function maltoToFrontend(parcels: MaltoParcel[], zones?: MaltoZoneInfo): 
           : avgPoint(coords);
 
       const season = mapSeason(p.saison);
-      const isBarley = !isNonOrge(p);
+      const detected = (p.culture_detected ?? '').trim();
+      // La classe enregistrée fait foi : libellé (« Orge », « Riz ») ou identifiant
+      // (`sol_nu`, `pomme_de_terre`). Le classifieur binaire orge/non-orge ne sert
+      // que lorsque la valeur stockée n'est pas une culture (« Non-orge »).
       const culture: CultureId =
-        !isBarley ? 'autre' // « Non-orge » détecté par le RF → autre culture
-        : (p.culture_detected ?? '').trim() !== '' ? 'orge' // classifiée orge
-        : mapCulture(p.culture_declared) || 'inconnue'; // non encore classifiée
+        knownCulture(detected)
+        ?? (detected
+          ? (isNonOrge(p) ? 'autre' : 'orge')
+          : (knownCulture(p.culture_declared) ?? (p.culture_declared?.trim() ? 'autre' : 'inconnue')));
       const conf = mapConfidence(p);
       const processedAt = p.created_at || new Date().toISOString();
 

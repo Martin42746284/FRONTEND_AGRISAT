@@ -171,6 +171,8 @@ export interface AutomaticDetectionResult {
   period_days: number;
   candidates_found: number;
   analyzed_count: number;
+  /** Candidats ignorés car déjà analysés et enregistrés en base. */
+  already_analyzed_count?: number;
   parcels: AutomaticDetectionParcel[];
   notice: string | null;
 }

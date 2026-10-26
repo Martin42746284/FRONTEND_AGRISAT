@@ -52,6 +52,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const zone = useApp((s) => s.zone);
   const automaticDetection = useApp((s) => s.automaticDetection);
   const automaticSearchCenter = useApp((s) => s.automaticSearchCenter);
+  const automaticSearchRadius = useApp((s) => s.automaticSearchRadius);
   const editingParcelId = useApp((s) => s.editingParcelId);
 
   const parcelLayers = useRef(new Map<string, google.maps.Polygon>());
@@ -66,6 +67,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const zoneMarkers = useRef<google.maps.Marker[]>([]);
   const editMarkers = useRef<google.maps.Marker[]>([]);
   const searchCenterMarker = useRef<google.maps.Marker | null>(null);
+  const searchRadiusCircle = useRef<google.maps.Circle | null>(null);
 
   const latest = useRef({ parcels: new Map<string, Parcel>(), drawing, automaticSearchCenter });
   latest.current.drawing = drawing;
@@ -102,6 +104,8 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       click.remove();
       searchCenterMarker.current?.setMap(null);
       searchCenterMarker.current = null;
+      searchRadiusCircle.current?.setMap(null);
+      searchRadiusCircle.current = null;
       parcelLayers.current.forEach((layer) => layer.setMap(null));
       parcelLayers.current.clear();
       regionLayers.current.forEach((layer) => layer.setMap(null));
@@ -140,6 +144,28 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     });
     searchCenterMarker.current = marker;
   }, [automaticSearchCenter, map]);
+
+  // Rayon de l'analyse automatique : cercle au sol, à l'échelle réelle, qui matérialise
+  // la zone où les parcelles sont analysées. Déplaçable avec le repère central.
+  useEffect(() => {
+    searchRadiusCircle.current?.setMap(null);
+    searchRadiusCircle.current = null;
+    if (!map || !automaticSearchCenter || !automaticSearchRadius) return;
+    const circle = new google.maps.Circle({
+      map,
+      center: { lat: automaticSearchCenter[0], lng: automaticSearchCenter[1] },
+      radius: automaticSearchRadius,
+      clickable: false,
+      strokeColor: '#0F7F86', strokeOpacity: 1, strokeWeight: 2,
+      fillColor: '#0F7F86', fillOpacity: 0.08,
+      zIndex: 45,
+    });
+    searchRadiusCircle.current = circle;
+    return () => {
+      circle.setMap(null);
+      if (searchRadiusCircle.current === circle) searchRadiusCircle.current = null;
+    };
+  }, [map, automaticSearchCenter, automaticSearchRadius]);
 
   // Fond de carte Google : imagerie satellite ou plan routier.
   useEffect(() => {

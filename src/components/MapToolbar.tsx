@@ -3,12 +3,29 @@ import { Check, Crosshair, Eraser, Home, Layers, PenTool, Search, Undo2, X, Scan
 import { useApp } from '../store/useApp';
 import { bboxOf, centroidOf, M_PER_DEG_LAT, mPerDegLng, ringAreaHa } from '../lib/geometry';
 import { normalize } from '../lib/format';
-import { api } from '../api/services';
+import { api, type AutomaticDetectionResult } from '../api/services';
 import { maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
 import { maltoToFrontend, type MaltoParcel } from '../api/maltoAdapter';
 import { parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
+import { runBatchesWithRetry } from '../lib/detect-queue';
 
 const NATIONAL: [[number, number], [number, number]] = [[-25.8, 43.0], [-11.8, 50.7]];
+
+/**
+ * Nombre de parcelles envoyées par requête d'analyse automatique.
+ *
+ * L'analyse d'une parcelle prend plusieurs dizaines de secondes : un seul appel
+ * pour tout le rayon dépassait les budgets du serveur, qui rendait alors des
+ * parcelles non analysées. Quatre parcelles par lot correspondent à la concurrence
+ * du backend, donc plus de seconde vague où trois créneaux attendent la plus lente.
+ */
+const DETECT_BATCH_SIZE = 4;
+
+/** Requêtes simultanées : les créneaux du serveur restent occupés d'un lot à l'autre. */
+const DETECT_MAX_IN_FLIGHT = 2;
+
+/** Tentatives par lot : un échec réseau ou un délai dépassé ne doit pas arrêter l'analyse. */
+const DETECT_BATCH_ATTEMPTS = 2;
 
 export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () => void; canLaunch?: boolean }) {
   const [q, setQ] = useState('');
@@ -39,7 +56,10 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const selectAutomaticParcel = useApp((s) => s.selectAutomaticParcel);
   const automaticSearchCenter = useApp((s) => s.automaticSearchCenter);
   const setAutomaticSearchCenter = useApp((s) => s.setAutomaticSearchCenter);
+  const setAutomaticSearchRadius = useApp((s) => s.setAutomaticSearchRadius);
   const [pending, setPending] = useState(false);
+  /** Avancement du traitement des parcelles du rayon (0 tant qu'aucune n'est visée). */
+  const [autoProgress, setAutoProgress] = useState<{ done: number; total: number } | null>(null);
   const [traceErr, setTraceErr] = useState<string | null>(null);
   const [parcelLabel, setParcelLabel] = useState('');
   const [ownerName, setOwnerName] = useState('');
@@ -69,12 +89,12 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   }, [automaticSearchCenter]);
 
   useEffect(() => {
-    if (!selectedId && !filtersOpen) return;
     setSearchOpen(false);
     setAutoSearchOpen(false);
     setAutomaticSearchCenter(null);
+    setAutomaticSearchRadius(null);
     selectAutomaticParcel(null);
-  }, [selectedId, filtersOpen, selectAutomaticParcel, setAutomaticSearchCenter]);
+  }, [selectedId, filtersOpen, selectAutomaticParcel, setAutomaticSearchCenter, setAutomaticSearchRadius]);
 
   // Annulation au démontage (changement de page) : pas de mise à jour d'état après.
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -214,9 +234,11 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
 
     setAutoSearchError(null);
     setAutomaticSearchCenter([lat, lng]);
+    setAutomaticSearchRadius(radiusM);
     setAutomaticDetection(null);
     selectAutomaticParcel(null);
     setPending(true);
+    setAutoProgress(null);
     try {
       // Contours automatiques ET parcelles tracées manuellement : les deux
       // doivent être classés, pas seulement les tracés VHR.
@@ -225,26 +247,119 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         { lat, lng, radiusM },
         rejectedParcels,
       ).map(toTracedParcelInput);
-      const result = await api.detectParcels({
-        lat, lng, radiusKm: radiusM / 1000,
-        baseTemperature: base, threshold, periodDays: period,
-        tracedParcels,
+
+      // Le rayon choisi est cadré à l'écran : la zone analysée est visible d'emblée.
+      const dLat = radiusM / M_PER_DEG_LAT;
+      const dLng = radiusM / mPerDegLng(lat);
+      flyTo({ bounds: [[lat - dLat, lng - dLng], [lat + dLat, lng + dLng]] });
+
+      // Toutes les parcelles situées dans le rayon doivent être traitées : les lots
+      // partent en continu (deux requêtes en vol, chacune servie par les quatre
+      // créneaux du backend) et chaque lot échoué est retenté. Un lot définitivement
+      // en échec n'interrompt plus les suivants : l'analyse va jusqu'à la dernière
+      // parcelle. Le résultat s'affiche au fil de l'eau.
+      const batches: Array<ReturnType<typeof toTracedParcelInput>[]> = [];
+      for (let start = 0; start < tracedParcels.length; start += DETECT_BATCH_SIZE) {
+        batches.push(tracedParcels.slice(start, start + DETECT_BATCH_SIZE));
+      }
+      // Aucun contour tracé dans la zone : la découverte automatique du serveur prend le relais.
+      if (batches.length === 0) batches.push([]);
+
+      let merged: AutomaticDetectionResult | null = null;
+      let sent = 0;
+      let failedParcels = 0;
+      const failure: { error: Error | null } = { error: null };
+
+      await runBatchesWithRetry(batches, {
+        maxInFlight: DETECT_MAX_IN_FLIGHT,
+        attempts: DETECT_BATCH_ATTEMPTS,
+        run: async (batch) => {
+          if (batch.length === 0) setAutoProgress({ done: 0, total: 0 });
+          try {
+            const result = await api.detectParcels({
+              lat, lng, radiusKm: radiusM / 1000,
+              baseTemperature: base, threshold, periodDays: period,
+              tracedParcels: batch,
+            });
+            const previous: AutomaticDetectionResult | null = merged;
+            const collected: AutomaticDetectionResult['parcels'] = [
+              ...(previous?.parcels ?? []),
+              ...result.parcels,
+            ];
+            const notices: string[] = [];
+            for (const notice of [previous?.notice, result.notice]) {
+              if (notice && !notices.includes(notice)) notices.push(notice);
+            }
+            const next: AutomaticDetectionResult = {
+              ...result,
+              candidates_found: collected.length,
+              analyzed_count: collected.filter((candidate) => candidate.analysis !== null).length,
+              already_analyzed_count: (previous?.already_analyzed_count ?? 0) + (result.already_analyzed_count ?? 0),
+              parcels: collected,
+              notice: notices.length ? notices.join(' ') : null,
+            };
+            merged = next;
+            setAutomaticDetection(next);
+          } catch (error) {
+            failure.error = failure.error ?? (error instanceof Error ? error : new Error(String(error)));
+            throw error;
+          }
+        },
+        onSettled: (batch, failed) => {
+          if (failed) failedParcels += batch.length;
+          sent += batch.length;
+          if (tracedParcels.length) {
+            setAutoProgress({ done: Math.min(sent, tracedParcels.length), total: tracedParcels.length });
+          }
+        },
       });
-      setAutomaticDetection(result);
+      if (!merged) throw failure.error ?? new Error('La recherche automatique n’a renvoyé aucun résultat.');
+      const completed: AutomaticDetectionResult = merged;
+      if (failedParcels) {
+        merged = {
+          ...completed,
+          notice: [
+            `${failedParcels} parcelle(s) n’ont pas pu être analysées (erreur réseau ou délai dépassé) : relancez l’analyse pour les traiter.`,
+            completed.notice,
+          ].filter(Boolean).join(' '),
+        };
+        setAutomaticDetection(merged);
+      }
       selectAutomaticParcel(null);
-      const barley = result.parcels.filter((candidate) => candidate.analysis?.is_barley === true).length;
-      toast(`${result.candidates_found} candidat(s) analysé(s) — ${barley} avec orge détectée.`, barley ? 'ok' : 'info');
+      const barley = merged.parcels.filter((candidate) => candidate.analysis?.is_barley === true).length;
+      const failed = merged.parcels.filter((candidate) => candidate.analysis === null).length;
+      toast(
+        `${merged.candidates_found} candidat(s) traité(s) — ${barley} avec orge détectée.`
+          + (failed ? ` ${failed} parcelle(s) sans résultat (analyse satellite indisponible).` : '')
+          + (failedParcels ? ` ${failedParcels} parcelle(s) non traitées (lots en échec).` : ''),
+        barley ? 'ok' : 'info',
+      );
     } catch (error) {
       setAutoSearchError(error instanceof Error ? error.message : 'La recherche automatique a échoué.');
     } finally {
       setPending(false);
+      setAutoProgress(null);
     }
+  };
+
+  /** Rayon valide saisi dans le formulaire, sinon `null` (le cercle n'est alors pas affiché). */
+  const validRadiusM = () => {
+    const radius = Number(autoRadiusM);
+    return Number.isFinite(radius) && radius >= 50 && radius <= 20_000 ? radius : null;
+  };
+
+  /** Met à jour le rayon de la zone affichée pendant la saisie. */
+  const updateSearchRadius = (value: string) => {
+    setAutoRadiusM(value);
+    const radius = Number(value);
+    if (Number.isFinite(radius) && radius >= 50 && radius <= 20_000) setAutomaticSearchRadius(radius);
   };
 
   const toggleAutoSearch = () => {
     if (autoSearchOpen) {
       setAutoSearchOpen(false);
       setAutomaticSearchCenter(null);
+      setAutomaticSearchRadius(null);
       selectAutomaticParcel(null);
       return;
     }
@@ -255,6 +370,8 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     const lat = Number(autoLat);
     const lng = Number(autoLng);
     if (Number.isFinite(lat) && Number.isFinite(lng)) setAutomaticSearchCenter([lat, lng]);
+    // La zone de l'analyse est matérialisée dès l'ouverture du formulaire.
+    setAutomaticSearchRadius(validRadiusM());
     setAutoSearchOpen(true);
   };
 
@@ -264,6 +381,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     if (!opening) return;
     setAutoSearchOpen(false);
     setAutomaticSearchCenter(null);
+    setAutomaticSearchRadius(null);
     selectAutomaticParcel(null);
     useApp.getState().select(null);
     useApp.getState().setFiltersOpen(false);
@@ -332,12 +450,12 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
           <section className="autosearch glass" aria-label="Recherche automatique de parcelles et d’orge">
             <header className="autosearch__head">
               <b><Radar size={16} /> Recherche automatique</b>
-              <button className="icon-btn" onClick={() => { setAutoSearchOpen(false); setAutomaticSearchCenter(null); }} aria-label="Fermer le formulaire"><X size={17} /></button>
+              <button className="icon-btn" onClick={() => { setAutoSearchOpen(false); setAutomaticSearchCenter(null); setAutomaticSearchRadius(null); }} aria-label="Fermer le formulaire"><X size={17} /></button>
             </header>
             <form className="autosearch__form" onSubmit={searchAutomatic}>
               <label className="field"><span>Latitude</span><input type="number" step="any" value={autoLat} onChange={(e) => updateSearchCoordinate('lat', e.target.value)} required /></label>
               <label className="field"><span>Longitude</span><input type="number" step="any" value={autoLng} onChange={(e) => updateSearchCoordinate('lng', e.target.value)} required /></label>
-              <label className="field"><span>Rayon terrain réel (m)</span><input type="number" min="50" max="20000" step="10" value={autoRadiusM} onChange={(e) => setAutoRadiusM(e.target.value)} required /><small>De 50 m à 20 km, indépendant du zoom.</small></label>
+              <label className="field"><span>Rayon terrain réel (m)</span><input type="number" min="50" max="20000" step="10" value={autoRadiusM} onChange={(e) => updateSearchRadius(e.target.value)} required /><small>De 50 m à 20 km, indépendant du zoom. Le cercle affiché sur la carte correspond à ce rayon.</small></label>
               <fieldset className="autosearch__gdd">
                 <legend><ThermometerSun size={15} /> Paramètres degrés-jours</legend>
                 <div className="autosearch__grid">
@@ -348,7 +466,12 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
               </fieldset>
               {autoSearchError && <p className="note note--danger">{autoSearchError}</p>}
               <button className="btn btn--primary" type="submit" disabled={pending}>
-                <Navigation size={15} /> {pending ? 'Analyse en cours…' : 'Lancer l’analyse automatique'}
+                <Navigation size={15} />{' '}
+                {pending
+                  ? autoProgress && autoProgress.total > 0
+                    ? `Analyse en cours… ${autoProgress.done}/${autoProgress.total} parcelles`
+                    : 'Analyse en cours…'
+                  : 'Lancer l’analyse automatique'}
               </button>
             </form>
             {automaticDetection && (
@@ -365,7 +488,14 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
                   const isBarley = analysis?.is_barley === true;
                   const label = analysis?.culture_detected ?? (candidate.analysis_error ? 'Analyse indisponible' : 'Non classée');
                   return (
-                    <button className={`autosearch__result ${selectedAutomaticParcelId === candidate.id ? 'is-selected' : ''}`} key={candidate.id} onClick={() => { selectAutomaticParcel(candidate.id); flyTo({ center: [candidate.center.lat, candidate.center.lng], zoom: 17 }); }}>
+                    <button className={`autosearch__result ${selectedAutomaticParcelId === candidate.id ? 'is-selected' : ''}`} key={candidate.id} onClick={() => {
+                      if (!automaticDetection.parcels.some((p) => p.id === candidate.id)) {
+                        selectAutomaticParcel(null);
+                        return;
+                      }
+                      selectAutomaticParcel(candidate.id);
+                      flyTo({ center: [candidate.center.lat, candidate.center.lng], zoom: 17 });
+                    }}>
                       <span className={`autosearch__dot ${isBarley ? 'autosearch__dot--barley' : analysis ? 'autosearch__dot--other' : ''}`} />
                       <span><strong>{label}</strong><small>{analysis?.verdict ?? candidate.analysis_error ?? candidate.tags.source ?? candidate.id}</small></span>
                       {analysis?.confidence != null && <em>{Math.round(analysis.confidence)}%</em>}

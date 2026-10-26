@@ -100,7 +100,7 @@ export default function AppShell() {
       </div>
 
       <ParcelDrawer />
-      <MapToolbar canLaunch={can?.analyze !== undefined || true} onAnalyze={() => alert('Analyse non implémentée dans ce layout')} />
+      <MapToolbar canLaunch={can.launch} onAnalyze={() => alert('Analyse non implémentée dans ce layout')} />
       <Toasts />
     </div>
   );
