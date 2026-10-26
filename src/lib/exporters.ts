@@ -32,7 +32,7 @@ export function toGeoJSON(views: ParcelView[], ctx: Ctx, filtersLabel: string): 
   const rm = Object.fromEntries(ctx.regions.map((r) => [r.id, r]));
   return JSON.stringify({
     type: 'FeatureCollection',
-    metadata: { generated: new Date().toISOString(), filters: filtersLabel, disclaimer: DISCLAIMER, fakeData: true },
+    metadata: { generated: new Date().toISOString(), filters: filtersLabel, disclaimer: DISCLAIMER, fakeData: false },
     features: views.map(({ p, r }) => ({
       type: 'Feature',
       id: p.id,

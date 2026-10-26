@@ -106,10 +106,15 @@ function mapConfidence(p: MaltoParcel): number {
   let conf = p.confidence ?? orgeProbFromVerdict(p.verdict);
   if (conf == null) conf = p.ndvi_percentage != null ? p.ndvi_percentage / 100 : 0.5;
   else if (conf > 1) conf /= 100; // % → probabilité
-  return Math.min(0.99, Math.max(0.05, conf));
-}
-
-/** Statut dérivé : verdict Malto → workflow frontend. */
+    // Si c'est détecté comme « Non-orge », inverser : confidence est la probabilité de non-orge,
+    // donc la probabilité d'orge est 1 - conf
+    if (isNonOrge(p)) {
+      conf = 1 - conf;
+    }
+    return Math.min(0.99, Math.max(0.05, conf));
+  }
+  
+  /** Statut dérivé : verdict Malto → workflow frontal. */
 function mapStatus(p: MaltoParcel, conf: number): Status {
   const v = (p.verdict ?? '').toLowerCase();
   if (v.includes('validé') || v.includes('valide') || v.includes('terrain')) return 'verifie_terrain';
