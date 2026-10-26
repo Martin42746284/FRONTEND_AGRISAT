@@ -8,7 +8,7 @@ import { api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectio
 import { maltoToFrontend, maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
 import { centroidOf, isDuplicateVhrParcel, pointInPolygon, ringAreaHa } from '../lib/geometry';
 import { analyzedParcelIds, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
-import { isManualParcel, REJECTED_PARCEL_SOURCE } from '../lib/parcel-sources';
+import { isImportedKmlParcel, isManualParcel, REJECTED_PARCEL_SOURCE } from '../lib/parcel-sources';
 import {
   addRejection, isDatabaseParcelId, isRejectedParcel, mergeRejections, type RejectedParcel,
 } from '../lib/rejections';
@@ -186,7 +186,7 @@ export const useApp = create<State>()(
           // Filet de sécurité si la suppression serveur avait échoué : un contour
           // automatique retiré ne réapparaît pas. Les parcelles manuelles sont
           // conservées telles quelles (l'utilisateur peut redessiner au même endroit).
-          parcels: db.parcels.filter((p) => isManualParcel(p) || !isRejectedParcel(p, rejectedParcels)),
+          parcels: db.parcels.filter((p) => isManualParcel(p) || isImportedKmlParcel(p) || !isRejectedParcel(p, rejectedParcels)),
           regions: db.regions, communes: db.communes, analyses: db.analyses,
           users: db.users, audit,
           rejectedParcels,
