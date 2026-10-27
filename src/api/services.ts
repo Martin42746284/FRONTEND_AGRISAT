@@ -233,6 +233,66 @@ export interface ZoneParcelsResult {
   [k: string]: unknown;
 }
 
+/** Payload POST /api/gemini-parcels — capture satellite + détection des parcelles. */
+export interface GeminiParcelsPayload {
+  latitude: number;
+  longitude: number;
+  /** Largeur de la zone capturée, en mètres (100 m par défaut). */
+  span_m?: number;
+  /**
+   * Largeur d'une tuile de la mosaïque, en mètres (20 m par défaut). Quand elle
+   * est inférieure à `span_m`, la capture est assemblée à partir de plusieurs
+   * tuiles pour conserver le détail métrique sur une zone plus large.
+   */
+  tile_span_m?: number;
+  /** Zoom imposé au lieu du zoom calculé pour `span_m`. */
+  zoom?: number;
+  /** `false` : renvoie les contours sans les enregistrer (aperçu). */
+  persist?: boolean;
+  /** Largeur en pixels de la vue écran visible à capturer. */
+  viewport_width?: number;
+  /** Hauteur en pixels de la vue écran visible à capturer. */
+  viewport_height?: number;
+  /** Coordonnées géographiques de la zone écran visible. */
+  bounds?: { south: number; west: number; north: number; east: number };
+}
+
+export interface GeminiCapture {
+  center: { lat: number; lng: number };
+  zoom: number;
+  span_m: number;
+  size_px: number;
+  /** Nombre de tuiles par côté (1 = capture simple, 5 = mosaïque 5×5). */
+  tiles: number;
+  /** Largeur d'une tuile de la mosaïque, en mètres. */
+  tile_span_m: number;
+  bounds: { south: number; west: number; north: number; east: number };
+  /** Image satellite capturée, en data URL PNG. */
+  image_data_url: string;
+}
+
+/** Parcelle déjà en base jugée identique à un contour détecté (aucune ligne créée). */
+export interface GeminiExistingParcel {
+  id: string;
+  label: string | null;
+  surface_ha: number | null;
+}
+
+export interface GeminiParcelsResult {
+  capture: GeminiCapture;
+  /** Lignes `parcelles` enregistrées (ou aperçu si `persist=false`). */
+  parcels: MaltoParcel[];
+  existing: GeminiExistingParcel[];
+  summary: {
+    detected: number;
+    valid: number;
+    created: number;
+    duplicates: number;
+    rejected: number;
+  };
+  warnings: string[];
+}
+
 export interface CreateMaltoParcelPayload {
   label: string;
   coordinates: Array<{ lat: number; lng: number }>;
@@ -357,6 +417,19 @@ export const api = {
   },
 
   /**
+   * Capture une image satellite (~100 m) autour d'un point, la fait analyser par
+   * Gemini puis enregistre les parcelles détectées. Les contours déjà présents en
+   * base ne sont pas dupliqués.
+   */
+  async geminiParcels(payload: GeminiParcelsPayload, signal?: AbortSignal): Promise<GeminiParcelsResult> {
+    return request<GeminiParcelsResult>('/api/gemini-parcels', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal: signal ?? null,
+    }, GEMINI_PARCELS_TIMEOUT_MS);
+  },
+
+  /**
    * Tracés VHR (modèle Delineate Anything JECAM) — délimitation automatique de parcelles.
    * `signal` permet d'annuler la requête (démontage, changement de zone).
    */
@@ -431,3 +504,4 @@ const ANALYZE_TIMEOUT_MS = 240_000;
 const DETECT_PARCELS_TIMEOUT_MS = 600_000;
 const ANALYZE_PARCEL_TIMEOUT_MS = 240_000;
 const ZONE_PARCELS_TIMEOUT_MS = 600_000; // mode « mix » ≈ 5–7 min
+const GEMINI_PARCELS_TIMEOUT_MS = 480_000; // capture Static Maps + analyse Gemini de ~9 fenêtres

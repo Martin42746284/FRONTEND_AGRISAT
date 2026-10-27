@@ -9,7 +9,9 @@ import { maltoToFrontend, maltoVhrToFrontend, type MaltoVhrFeature } from '../ap
 import { centroidOf, isDuplicateVhrParcel, pointInPolygon, ringAreaHa } from '../lib/geometry';
 import { analyzedParcelIds, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
 import { correctionText, withCorrectedClass } from '../lib/culture-sync';
-import { isImportedKmlParcel, isManualParcel, REJECTED_PARCEL_SOURCE } from '../lib/parcel-sources';
+import {
+  isExplicitParcel, isManualParcel, REJECTED_PARCEL_SOURCE,
+} from '../lib/parcel-sources';
 import {
   addRejection, isDatabaseParcelId, isRejectedParcel, mergeRejections, type RejectedParcel,
 } from '../lib/rejections';
@@ -22,6 +24,23 @@ export const DEFAULT_FILTERS: Filters = {
 
 export interface FlyTarget { bounds?: [LatLng, LatLng]; center?: LatLng; zoom?: number; nonce: number }
 export interface Toast { id: number; msg: string; tone: 'ok' | 'info' | 'warn' | 'danger' }
+
+/**
+ * Centre et zoom d'ouverture de la carte : vue rapprochée. La capture Gemini
+ * assemble ensuite des tuiles de 20 m sur ~100 m autour du centre.
+ */
+export const DEFAULT_MAP_CENTER: LatLng = [-19.848219, 47.011882];
+export const DEFAULT_MAP_ZOOM = 21;
+
+/** Zone couverte par la dernière capture Gemini (rectangle affiché sur la carte). */
+export interface GeminiCaptureArea {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+  spanM: number;
+  zoom: number;
+}
 
 /** Résumé du dernier traçage automatique (contours IA — à présenter comme indicatifs). */
 export interface TraceInfo {
@@ -51,6 +70,26 @@ interface State {
   fly: FlyTarget | null;
   filtersOpen: boolean;
   setFiltersOpen: (v: boolean) => void;
+
+  /** Centre et zoom courants de la carte (mis à jour à chaque déplacement). */
+  mapCenter: LatLng;
+  mapZoom: number;
+  mapBounds: { south: number; west: number; north: number; east: number } | null;
+  mapSize: { width: number; height: number } | null;
+  setMapView: (
+    center: LatLng,
+    zoom: number,
+    bounds?: { south: number; west: number; north: number; east: number } | null,
+    size?: { width: number; height: number } | null,
+  ) => void;
+  /** Zone couverte par la dernière capture Gemini, matérialisée sur la carte. */
+  geminiCapture: GeminiCaptureArea | null;
+  setGeminiCapture: (capture: GeminiCaptureArea | null) => void;
+  /**
+   * Ajoute des parcelles détectées par Gemini (déjà enregistrées en base).
+   * Les identifiants déjà affichés sont ignorés : pas de doublon visuel.
+   */
+  addDetectedParcels: (added: Parcel[]) => number;
 
   drawing: boolean; drawMode: 'zone' | 'parcel'; draft: LatLng[]; zone: LatLng[] | null; manualParcelDraft: LatLng[] | null;
   toasts: Toast[];
@@ -113,8 +152,7 @@ interface State {
    * la relance (`force`).
    */
   analyzeParcel: (id: string, options?: { force?: boolean }) => Promise<void>;
-  addTracedParcels: (added: Parcel[], info: TraceInfo) => number;
-  setAutomaticDetection: (result: AutomaticDetectionResult | null) => void;
+  addTracedParcels: (added: Parcel[], info: TraceInfo) => number;  setAutomaticDetection: (result: AutomaticDetectionResult | null) => void;
   setAutomaticSearchCenter: (center: LatLng | null) => void;
   setAutomaticSearchRadius: (radiusM: number | null) => void;
   selectAutomaticParcel: (id: string | null) => void;
@@ -144,6 +182,18 @@ export const useApp = create<State>()(
       fly: null,
       filtersOpen: false,
       setFiltersOpen: (v) => set({ filtersOpen: v }),
+      mapCenter: DEFAULT_MAP_CENTER,
+      mapZoom: DEFAULT_MAP_ZOOM,
+      mapBounds: null,
+      mapSize: null,
+      setMapView: (center, zoom, bounds, size) => set({
+        mapCenter: center,
+        mapZoom: zoom,
+        ...(bounds !== undefined ? { mapBounds: bounds } : {}),
+        ...(size !== undefined ? { mapSize: size } : {}),
+      }),
+      geminiCapture: null,
+      setGeminiCapture: (capture) => set({ geminiCapture: capture }),
       drawing: false, drawMode: 'zone', draft: [], zone: null, manualParcelDraft: null,
       analyzingParcelId: null,
       toasts: [],
@@ -195,9 +245,9 @@ export const useApp = create<State>()(
         const rejectedParcels = mergeRejections(get().rejectedParcels, db.rejectedParcels);
         set({
           // Filet de sécurité si la suppression serveur avait échoué : un contour
-          // automatique retiré ne réapparaît pas. Les parcelles manuelles sont
-          // conservées telles quelles (l'utilisateur peut redessiner au même endroit).
-          parcels: db.parcels.filter((p) => isManualParcel(p) || isImportedKmlParcel(p) || !isRejectedParcel(p, rejectedParcels)),
+          // automatique retiré ne réapparaît pas. Les délimitations explicites
+          // (tracé manuel, import KML, détection Gemini) sont conservées telles quelles.
+          parcels: db.parcels.filter((p) => isExplicitParcel(p) || !isRejectedParcel(p, rejectedParcels)),
           regions: db.regions, communes: db.communes, analyses: db.analyses,
           users: db.users, audit,
           rejectedParcels,
@@ -340,6 +390,14 @@ export const useApp = create<State>()(
         }
         // `info.added` est recalculé ici : nombre réel de contours nouveaux.
         set((s) => ({ parcels: [...s.parcels, ...fresh], traceInfo: { ...info, added: fresh.length } }));
+        return fresh.length;
+      },
+      addDetectedParcels: (added) => {
+        // Le backend a déjà écarté les contours présents en base. Ici on ne filtre
+        // que les identifiants déjà affichés (double capture de la même zone).
+        const known = new Set(get().parcels.map((parcel) => parcel.id));
+        const fresh = added.filter((parcel) => !known.has(parcel.id));
+        if (fresh.length) set((s) => ({ parcels: [...s.parcels, ...fresh] }));
         return fresh.length;
       },
       setAutomaticDetection: (result) => set({ automaticDetection: result }),

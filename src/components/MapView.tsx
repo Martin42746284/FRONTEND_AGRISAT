@@ -1,17 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';
-import { useApp } from '../store/useApp';
+import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, useApp } from '../store/useApp';
 import { computeStyle } from '../lib/style';
 import { ringAreaHa } from '../lib/geometry';
 import { ROLES } from '../data/constants';
 import type { Parcel } from '../types';
-import { useViewportParcelTracing } from '../hooks/useViewportParcelTracing';
+import { isAnalyzedParcel } from '../lib/analysis-parcels';
 import { parcelOutlineStyle } from '../lib/parcel-outline-style';
+import { isGeminiParcel } from '../lib/parcel-sources';
 import { pickParcelAt } from '../lib/parcel-selection';
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
-const DEFAULT_CENTER = { lat: -19.848219, lng: 47.011882 };
-const DEFAULT_ZOOM = 16;
 
 /**
  * Ordre d'empilement des contours de parcelles.
@@ -33,7 +32,6 @@ function outlineZIndex(parcel: Parcel): number {
 const MAP_CONTAINER_STYLE = { width: '100%', height: '100%' };
 
 export default function MapView({ baseIds }: { baseIds: Set<string> }) {
-  const traceIdleHandler = useViewportParcelTracing();
   const [map, setMap] = useState<google.maps.Map | null>(null);
   const parcels = useApp((s) => s.parcels);
   const communes = useApp((s) => s.communes);
@@ -54,6 +52,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const automaticSearchCenter = useApp((s) => s.automaticSearchCenter);
   const automaticSearchRadius = useApp((s) => s.automaticSearchRadius);
   const editingParcelId = useApp((s) => s.editingParcelId);
+  const geminiCapture = useApp((s) => s.geminiCapture);
 
   const parcelLayers = useRef(new Map<string, google.maps.Polygon>());
   const onMap = useRef(new Set<string>());
@@ -68,11 +67,12 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const editMarkers = useRef<google.maps.Marker[]>([]);
   const searchCenterMarker = useRef<google.maps.Marker | null>(null);
   const searchRadiusCircle = useRef<google.maps.Circle | null>(null);
+  const captureRectangle = useRef<google.maps.Rectangle | null>(null);
 
   const latest = useRef({ parcels: new Map<string, Parcel>(), drawing, automaticSearchCenter });
   latest.current.drawing = drawing;
   latest.current.automaticSearchCenter = automaticSearchCenter;
-  const center = useMemo(() => DEFAULT_CENTER, []);
+  const center = useMemo(() => ({ lat: DEFAULT_MAP_CENTER[0], lng: DEFAULT_MAP_CENTER[1] }), []);
   const mapOptions = useMemo<google.maps.MapOptions>(() => ({
     mapTypeId: basemap === 'satellite' ? 'satellite' : 'roadmap',
     minZoom: 5,
@@ -86,10 +86,29 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     gestureHandling: 'greedy',
   }), [basemap]);
 
-  // Carte, clics de dessin et écoute du déplacement/zoom pour lancer le traçage.
+  // Carte, clics de dessin et suivi du centre/zoom (utilisé par la capture Gemini).
   useEffect(() => {
     if (!map) return;
-    const idle = map.addListener('idle', () => traceIdleHandler.current(map));
+    const syncView = () => {
+      const currentCenter = map.getCenter();
+      const currentZoom = map.getZoom();
+      const currentBounds = map.getBounds();
+      const div = map.getDiv();
+      if (currentCenter && typeof currentZoom === 'number') {
+        const bounds = currentBounds ? {
+          south: currentBounds.getSouthWest().lat(),
+          west: currentBounds.getSouthWest().lng(),
+          north: currentBounds.getNorthEast().lat(),
+          east: currentBounds.getNorthEast().lng(),
+        } : null;
+        const size = div ? {
+          width: div.clientWidth,
+          height: div.clientHeight,
+        } : null;
+        useApp.getState().setMapView([currentCenter.lat(), currentCenter.lng()], currentZoom, bounds, size);
+      }
+    };
+    const idle = map.addListener('idle', syncView);
     const click = map.addListener('click', (event: google.maps.MapMouseEvent) => {
       if (latest.current.drawing && event.latLng) {
         useApp.getState().addDraftPoint([event.latLng.lat(), event.latLng.lng()]);
@@ -97,8 +116,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         useApp.getState().setAutomaticSearchCenter([event.latLng.lat(), event.latLng.lng()]);
       }
     });
-    map.getDiv().classList.toggle('is-drawing', drawing);
-    traceIdleHandler.current(map);
+    syncView();
     return () => {
       idle.remove();
       click.remove();
@@ -106,6 +124,8 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       searchCenterMarker.current = null;
       searchRadiusCircle.current?.setMap(null);
       searchRadiusCircle.current = null;
+      captureRectangle.current?.setMap(null);
+      captureRectangle.current = null;
       parcelLayers.current.forEach((layer) => layer.setMap(null));
       parcelLayers.current.clear();
       regionLayers.current.forEach((layer) => layer.setMap(null));
@@ -117,7 +137,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       map.getDiv().classList.remove('is-drawing');
       onMap.current.clear();
     };
-  }, [map, traceIdleHandler]);
+  }, [map]);
 
   // Repère rouge déplaçable pour choisir le centre de l’analyse orge/non-orge.
   useEffect(() => {
@@ -166,6 +186,31 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       if (searchRadiusCircle.current === circle) searchRadiusCircle.current = null;
     };
   }, [map, automaticSearchCenter, automaticSearchRadius]);
+
+  // Zone couverte par la dernière capture Gemini : rectangle au sol, à l'échelle réelle.
+  useEffect(() => {
+    captureRectangle.current?.setMap(null);
+    captureRectangle.current = null;
+    if (!map || !geminiCapture) return;
+    const rectangle = new google.maps.Rectangle({
+      map,
+      bounds: {
+        south: geminiCapture.south,
+        west: geminiCapture.west,
+        north: geminiCapture.north,
+        east: geminiCapture.east,
+      },
+      clickable: false,
+      strokeColor: '#38BDF8', strokeOpacity: 1, strokeWeight: 2,
+      fillColor: '#38BDF8', fillOpacity: 0.05,
+      zIndex: 55,
+    });
+    captureRectangle.current = rectangle;
+    return () => {
+      rectangle.setMap(null);
+      if (captureRectangle.current === rectangle) captureRectangle.current = null;
+    };
+  }, [map, geminiCapture]);
 
   // Fond de carte Google : imagerie satellite ou plan routier.
   useEffect(() => {
@@ -347,23 +392,37 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         onMap.current.delete(parcel.id);
         continue;
       }
+      // Contour Gemini encore à analyser : trait rouge fin, sans remplissage ni
+      // étiquette, comme la délimitation de référence. C'est une délimitation
+      // explicite : elle reste visible même quand un filtre de culture masque
+      // les parcelles non classées. Une fois analysé, la parcelle reprend le
+      // style de culture habituel (flux KML/tracé manuel).
+      const isGeminiOutline = isGeminiParcel(parcel) && !isAnalyzedParcel(parcel);
       const { visible, options } = computeStyle(result, context, parcel.id === selectedId);
-      if (!visible) {
+      if (!visible && !isGeminiOutline) {
         polygon.setMap(null);
         onMap.current.delete(parcel.id);
         continue;
       }
       const isManualParcel = result.analysisId.startsWith('MALTO-') && (result.culture === 'inconnue' || !result.confidence);
       const isVhrOutline = result.modelVersion.includes('Delineate Anything') || isManualParcel;
-      const displayStyle = isVhrOutline
-        ? parcelOutlineStyle(parcel, parcel.id === selectedId)
-        : {
-          fillColor: options.fillColor,
-          fillOpacity: options.fillOpacity,
-          strokeColor: options.color,
-          strokeOpacity: options.opacity,
-          strokeWeight: options.weight,
-        };
+      const displayStyle = isGeminiOutline
+        ? {
+          fillColor: '#FF0000',
+          fillOpacity: 0,
+          strokeColor: '#FF0000',
+          strokeOpacity: 1,
+          strokeWeight: parcel.id === selectedId ? 3 : 2,
+        }
+        : isVhrOutline
+          ? parcelOutlineStyle(parcel, parcel.id === selectedId)
+          : {
+            fillColor: options.fillColor,
+            fillOpacity: options.fillOpacity,
+            strokeColor: options.color,
+            strokeOpacity: options.opacity,
+            strokeWeight: options.weight,
+          };
       polygon.setOptions({ ...displayStyle, zIndex: parcel.id === selectedId ? 1000 : outlineZIndex(parcel) });
       if (!onMap.current.has(parcel.id)) {
         polygon.setMap(map);
@@ -555,7 +614,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       mapContainerStyle={MAP_CONTAINER_STYLE}
       mapContainerClassName="map"
       center={center}
-      zoom={DEFAULT_ZOOM}
+      zoom={DEFAULT_MAP_ZOOM}
       options={mapOptions}
       onLoad={setMap}
       onUnmount={() => setMap(null)}

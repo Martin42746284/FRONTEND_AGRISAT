@@ -74,9 +74,9 @@ function assignZones(parcels: Parcel[], regions: Region[], communes: Commune[]):
  * Délai propre à la lecture de la table `parcelles`.
  *
  * Le backend relit toutes les lignes avec leurs colonnes JSONB (contours, séries
- * temporelles), ce qui coûte 20 à 35 s sur Neon, réveil du calcul compris. Le délai
- * par défaut de `request` (20 s) coupait la requête avant la réponse : la carte
- * restait vide alors que la base était saine. Marge au-dessus du timeout serveur (90 s).
+ * temporelles), ce qui coûte 20 à 35 s sur Neon, réveil du calcul compris. Un délai
+ * de 20 s coupait la requête avant la réponse : la carte restait vide alors que la
+ * base était saine. Marge au-dessus du timeout serveur (60 s).
  */
 const PARCELLES_TIMEOUT_MS = 120_000;
 
@@ -114,8 +114,8 @@ export async function bootstrapReal(): Promise<BootstrapDb> {
   }
   const ftw = maltoToFrontend(kept);
 
-  // Plus de pré-chargement statique VHR en base : les contours VHR sont tracés
-  // dynamiquement sur la carte par le traçage automatique de l'écran (useViewportParcelTracing).
+  // Plus de pré-chargement statique VHR en base : les délimitations affichées
+  // proviennent des imports KML, des tracés manuels et de la détection Gemini.
   const zones = deriveZones(ftw);
   const parcels = assignZones(ftw, zones.regions, zones.communes);
 

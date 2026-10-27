@@ -6,6 +6,9 @@ export const MANUAL_PARCEL_SOURCE = 'Tracé manuel';
 /** Parcelle importée depuis un fichier KML, sans culture (script backend). */
 export const IMPORTED_KML_SOURCE = 'Import KML';
 
+/** Parcelle détectée par Gemini à partir d'une capture satellite. */
+export const GEMINI_PARCEL_SOURCE = 'Détection Gemini';
+
 /**
  * Ligne de suppression écrite dans `parcelles` quand l'utilisateur retire un
  * contour tracé automatiquement : le contour n'existe pas en base, il faut donc
@@ -24,6 +27,19 @@ export function isManualParcel(parcel: Pick<Parcel, 'dataSource'>): boolean {
  */
 export function isImportedKmlParcel(parcel: Pick<Parcel, 'dataSource'>): boolean {
   return parcel.dataSource === IMPORTED_KML_SOURCE;
+}
+
+export function isGeminiParcel(parcel: Pick<Parcel, 'dataSource'>): boolean {
+  return parcel.dataSource === GEMINI_PARCEL_SOURCE;
+}
+
+/**
+ * Délimitation explicite : tracé manuel, import KML ou détection Gemini. Elle ne
+ * doit pas être masquée par une suppression de contour automatique présente au
+ * même endroit.
+ */
+export function isExplicitParcel(parcel: Pick<Parcel, 'dataSource'>): boolean {
+  return isManualParcel(parcel) || isImportedKmlParcel(parcel) || isGeminiParcel(parcel);
 }
 
 /** Contour produit par le traçage automatique (Delineate Anything / JECAM-VHR). */

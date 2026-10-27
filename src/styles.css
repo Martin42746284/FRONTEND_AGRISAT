@@ -398,6 +398,22 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .autosearch__dot--barley { background: #16A34A; }
 .autosearch__dot--other { background: #64748B; }
 .autosearch__result.is-selected { border-color: var(--accent); background: var(--accent-soft); }
+/* Détection Gemini : capture satellite ~100 m + parcelles détectées. */
+.maptools--gemini .autosearch { z-index: 1; }
+.gemini__view { display: grid; gap: 3px; margin: 4px 0 8px; }
+.gemini__view > div { display: flex; justify-content: space-between; gap: 10px; }
+.gemini__view dt { color: var(--ink-3); font-size: 11.5px; }
+.gemini__view dd { margin: 0; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.gemini__capture, .gemini__analyze-all { width: 100%; justify-content: center; }
+.gemini__preview { display: block; width: 100%; margin: 6px 0; border: 1px solid var(--line-2); border-radius: 8px; }
+.gemini__results { gap: 6px; }
+.gemini__row { display: flex; align-items: stretch; gap: 4px; }
+.gemini__row .autosearch__result { flex: 1; }
+.gemini__row .icon-btn { flex: none; }
+.gemini__row.is-selected .autosearch__result { border-color: var(--accent); background: var(--accent-soft); }
+.gemini__existing { font-size: 11.5px; color: var(--ink-3); }
+.gemini__existing summary { cursor: pointer; }
+.gemini__existing ul { margin: 4px 0 0; padding-left: 18px; }
 .automatic-parcel-drawer { position: absolute; top: 0; right: calc(100% + 8px); width: min(380px, calc(100vw - 32px)); max-height: min(78vh, 760px); display: flex; flex-direction: column; overflow: hidden; color: var(--ink); }
 .automatic-parcel-drawer__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .automatic-parcel-drawer__head h2 { margin: 0; overflow-wrap: anywhere; }
@@ -485,7 +501,12 @@ body[data-drawer="open"] .maptools--autosearch.maptools--search .searchpop {
   body[data-drawer="open"] .maptools { margin-right: 0; right: 10px; }
   body[data-drawer="open"] .maptools--search { z-index: 1100; }
   body[data-drawer="open"] .shell:has(.maptools--autosearch) .drawer { height: 45%; }
+  body[data-drawer="open"] .shell:has(.maptools--gemini) .drawer { height: 45%; }
   body[data-drawer="open"] .maptools--autosearch .autosearch {
+    position: fixed; top: 8px; right: 74px; bottom: calc(45% + 8px);
+    width: min(360px, calc(100vw - 90px)); max-height: none;
+  }
+  body[data-drawer="open"] .maptools--gemini .autosearch {
     position: fixed; top: 8px; right: 74px; bottom: calc(45% + 8px);
     width: min(360px, calc(100vw - 90px)); max-height: none;
   }
@@ -503,6 +524,13 @@ body[data-drawer="open"] .maptools--autosearch.maptools--search .searchpop {
     width: min(360px, calc(100vw - 90px)); max-height: none;
   }
   body[data-drawer="open"] .maptools--autosearch.maptools--search .autosearch {
+    right: 74px; bottom: calc(45% + 8px);
+  }
+  .maptools--gemini .autosearch {
+    position: fixed; z-index: 1100; top: 60px; right: 74px; bottom: 8px;
+    width: min(360px, calc(100vw - 90px)); max-height: none;
+  }
+  body[data-drawer="open"] .maptools--gemini .autosearch {
     right: 74px; bottom: calc(45% + 8px);
   }
   .login { grid-template-columns: 1fr; gap: 24px; } .grid2 { grid-template-columns: 1fr; }

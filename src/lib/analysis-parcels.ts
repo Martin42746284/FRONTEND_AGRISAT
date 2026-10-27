@@ -1,6 +1,6 @@
 import type { LatLng, Parcel } from '../types';
 import { M_PER_DEG_LAT, mPerDegLng, pointInPolygon } from './geometry';
-import { isImportedKmlParcel, isManualParcel } from './parcel-sources';
+import { isExplicitParcel } from './parcel-sources';
 import { isDatabaseParcelId, isRejectedParcel, type RejectedParcel } from './rejections';
 
 /** Plafond du backend pour `traced_parcels` (MAX_TRACED_PARCELS). */
@@ -62,11 +62,11 @@ export function parcelsForAnalysis(
 ): Parcel[] {
   return parcels
     .flatMap((parcel) => {
-      const manual = isManualParcel(parcel);
       if (parcel.rejected) return [];
-      // Une parcelle redessinée à la main ou délimitée par un import KML reste
-      // analysable : seuls les contours automatiques sont concernés par les suppressions.
-      if (!manual && !isImportedKmlParcel(parcel) && isRejectedParcel(parcel, rejections)) return [];
+      // Une parcelle redessinée à la main, importée par KML ou détectée par Gemini
+      // reste analysable : seuls les contours automatiques sont concernés par les
+      // suppressions.
+      if (!isExplicitParcel(parcel) && isRejectedParcel(parcel, rejections)) return [];
       // Déjà analysée : on ne recalcule rien, les données en base restent valables.
       // Les lignes de la base encore sans résultat (contours importés) passent, elles.
       if (isAnalyzedParcel(parcel)) return [];
