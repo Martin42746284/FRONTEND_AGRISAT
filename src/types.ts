@@ -4,7 +4,7 @@ export type CultureId =
   | 'orge' | 'riz' | 'haricot' | 'mais' | 'manioc' | 'pomme_de_terre'
   | 'autre' | 'jachere' | 'sol_nu' | 'vegetation' | 'eau' | 'inconnue';
 
-export type Status = 'non_verifie' | 'verifie_terrain' | 'corrige' | 'incertain' | 'obsolete';
+export type Status = 'confirme' | 'a_verifier' | 'non_verifie' | 'verifie_terrain' | 'corrige' | 'incertain' | 'obsolete';
 export type DisplayMode = 'general' | 'filtre' | 'comparatif';
 export type OthersStyle = 'grise' | 'masque';
 export type Role = 'admin' | 'analyste' | 'terrain' | 'lecteur' | 'gestionnaire';

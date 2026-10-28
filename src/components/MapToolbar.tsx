@@ -5,6 +5,7 @@ import { useApp } from '../store/useApp';
 import { bboxOf, centroidOf, M_PER_DEG_LAT, mPerDegLng, ringAreaHa } from '../lib/geometry';
 import { normalize, withoutToolName } from '../lib/format';
 import { parseCoordinates } from '../lib/coordinates';
+import CaptureProgressOverlay, { type CaptureProgressView } from './CaptureProgressOverlay';
 import { api, type AutomaticDetectionResult, type GeminiParcelsPayload, type GeminiParcelsResult } from '../api/services';
 import { maltoToFrontend, type MaltoParcel } from '../api/maltoAdapter';
 import { isAnalyzedParcel, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
@@ -101,11 +102,10 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const [gddThreshold, setGddThreshold] = useState('2000');
   const [periodDays, setPeriodDays] = useState('130');
   const [autoSearchError, setAutoSearchError] = useState<string | null>(null);
-  /** Pourcentage d'avancement de la capture, `null` quand elle n'est pas en cours. */
-  const [captureProgress, setCaptureProgress] = useState<number | null>(null);
+  /** Palier réel de la capture, `null` quand elle n'est pas en cours. */
+  const [captureProgress, setCaptureProgress] = useState<CaptureProgressView | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const coordinateFromInput = useRef<[number, number] | null>(null);
-  const progressTimer = useRef<number | null>(null);
   const progressDoneTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -127,11 +127,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     selectAutomaticParcel(null);
   }, [selectedId, filtersOpen, selectAutomaticParcel, setAutomaticSearchCenter, setAutomaticSearchRadius]);
 
-  const clearProgressTimers = () => {
-    if (progressTimer.current !== null) {
-      window.clearInterval(progressTimer.current);
-      progressTimer.current = null;
-    }
+  const clearProgressDoneTimer = () => {
     if (progressDoneTimer.current !== null) {
       window.clearTimeout(progressDoneTimer.current);
       progressDoneTimer.current = null;
@@ -141,7 +137,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   // Annulation au démontage (changement de page) : pas de mise à jour d'état après.
   useEffect(() => () => {
     abortRef.current?.abort();
-    clearProgressTimers();
+    clearProgressDoneTimer();
   }, []);
 
   // Le placement n'a de sens que sur la carte et jamais pendant un tracé.
@@ -152,30 +148,34 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   /**
    * Progression de la capture.
    *
-   * Le serveur répond en un seul bloc, sans palier intermédiaire : le pourcentage
-   * est donc une estimation dans le temps, qui approche 95 % puis n'atteint
-   * 100 % qu'à la réception du résultat. La barre reste affichée un court instant
-   * à 100 % pour marquer la fin.
+   * Aucun pourcentage n'est inventé côté client : le backend envoie chaque
+   * palier dès qu'il est réellement atteint (tuiles téléchargées, fenêtres
+   * Gemini terminées, enregistrement en base). Le client se contente de les
+   * afficher et ne passe à 100 % qu'après réception du résultat complet.
    */
   const startCaptureProgress = () => {
-    clearProgressTimers();
-    setCaptureProgress(0);
-    const startedAt = Date.now();
-    progressTimer.current = window.setInterval(() => {
-      const elapsed = Date.now() - startedAt;
-      setCaptureProgress(Math.min(95, Math.round(95 * (1 - Math.exp(-elapsed / 12_000)))));
-    }, 350);
+    clearProgressDoneTimer();
+    setCaptureProgress({ percent: 1, label: 'Préparation de la capture…', done: false });
+  };
+  const updateCaptureProgress = (step: { percent: number; label: string }) => {
+    setCaptureProgress({ percent: step.percent, label: step.label, done: false });
   };
   const finishCaptureProgress = () => {
-    clearProgressTimers();
-    setCaptureProgress(100);
+    clearProgressDoneTimer();
+    setCaptureProgress({ percent: 100, label: 'Analyse terminée', done: true });
+    // Petit temps de lecture avant de rendre la main : la disparition est
+    // automatique, mais le pourcentage 100 % est atteint uniquement avec le
+    // résultat réel du backend.
     progressDoneTimer.current = window.setTimeout(() => {
-      setCaptureProgress(null);
-      progressDoneTimer.current = null;
-    }, 900);
+      setCaptureProgress((current) => (current ? { ...current, leaving: true } : current));
+      progressDoneTimer.current = window.setTimeout(() => {
+        setCaptureProgress(null);
+        progressDoneTimer.current = null;
+      }, 300);
+    }, 700);
   };
   const abortCaptureProgress = () => {
-    clearProgressTimers();
+    clearProgressDoneTimer();
     setCaptureProgress(null);
   };
 
@@ -210,7 +210,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         payload.tile_span_m = GEMINI_CAPTURE_TILE_SPAN_M;
       }
 
-      const result = await api.geminiParcels(payload, ctrl.signal);
+      const result = await api.geminiParcelsStream(payload, updateCaptureProgress, ctrl.signal);
       if (ctrl.signal.aborted) return;
 
       // Les contours renvoyés sont déjà enregistrés en base (UUID) : ils suivent
@@ -822,21 +822,21 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
             <button className="btn btn--primary gemini__capture" onClick={() => void captureTerrain()} disabled={geminiPending}>
               <Camera size={15} /> {geminiPending ? 'Capture et détection…' : 'Capturer le terrain'}
             </button>
-            {captureProgress !== null && (
+            {captureProgress && (
               <div
                 className="capture-progress"
                 role="progressbar"
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={captureProgress}
+                aria-valuenow={captureProgress.percent}
                 aria-label="Avancement de l’analyse de la capture"
               >
                 <div className="capture-progress__head">
                   <Loader2 size={14} className="capture-progress__spin" aria-hidden />
-                  <span>{captureProgress >= 100 ? 'Analyse terminée' : 'Analyse de l’image satellite…'}</span>
-                  <b>{captureProgress} %</b>
+                  <span>{captureProgress.label}</span>
+                  <b>{captureProgress.percent} %</b>
                 </div>
-                <div className="capture-progress__track"><i style={{ width: `${captureProgress}%` }} /></div>
+                <div className="capture-progress__track"><i style={{ width: `${captureProgress.percent}%` }} /></div>
               </div>
             )}
             {geminiPending && (
@@ -1008,8 +1008,8 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
               <Camera size={13} /> {geminiPending ? 'Capture en cours…' : 'Capturer le terrain'}
             </button>
             <button className="btn btn--sm" onClick={() => setZone(null)}><Eraser size={13} /> Supprimer</button>
-            {geminiPending && captureProgress !== null && (
-              <span className="hint">Capture satellite et détection des parcelles en cours — {captureProgress} %</span>
+            {geminiPending && captureProgress && (
+              <span className="hint">Capture satellite et détection des parcelles en cours — {captureProgress.percent} %</span>
             )}
           </div>
         )}
@@ -1036,6 +1036,8 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
           <button className="btn btn--sm" onClick={cancelDraw}><X size={13} /> Annuler</button>
         </div>
       )}
+
+      {captureProgress && <CaptureProgressOverlay progress={captureProgress} />}
     </>
   );
 }

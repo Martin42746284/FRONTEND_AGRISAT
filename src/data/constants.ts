@@ -30,6 +30,8 @@ export const DEFAULT_SEASON = '2026-C';
 export const CURRENT_MODEL = 'RF 1.1.0 / ResUNet 1.2.0';
 
 export const STATUS_LABEL: Record<Status, string> = {
+  confirme: 'Confirmé',
+  a_verifier: 'À vérifier',
   non_verifie: 'Non vérifié',
   verifie_terrain: 'Vérifié sur le terrain',
   corrige: 'Corrigé',
@@ -37,6 +39,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   obsolete: 'Obsolète',
 };
 export const STATUS_TONE: Record<Status, string> = {
+  confirme: 'ok', a_verifier: 'warn',
   non_verifie: 'neutral', verifie_terrain: 'ok', corrige: 'info', incertain: 'warn', obsolete: 'muted',
 };
 

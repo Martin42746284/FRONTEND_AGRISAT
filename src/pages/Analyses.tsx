@@ -1,18 +1,36 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, RotateCcw, Check, CircleDot, Circle, MapPin, Trash2 } from 'lucide-react';
+import { Plus, RotateCcw, Check, CircleDot, Circle, MapPin, Trash2, ScanSearch, Loader2 } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import type { Analysis, AnalysisParcel } from '../types';
 import { PIPELINE_STEPS, ROLES, SEASON_BY_ID } from '../data/constants';
 import { fmtDate, fmtHa, fmtInt } from '../lib/format';
+import { cultureCountsForAnalysis, type AnalysisCultureCounts } from '../lib/analysis-parcels';
 import { AnalysisBadge, Empty, Modal } from '../components/ui';
 import NewAnalysisModal from '../components/NewAnalysisModal';
+
+/** Nombre de parcelles analysées par catégorie, pour une entrée d'historique. */
+function CultureCounts({ counts }: { counts: AnalysisCultureCounts }) {
+  const plural = (count: number) => count === 1 ? 'parcelle' : 'parcelles';
+  return (
+    <div className="an-cultures">
+      <span>Orge : <b>{counts.orge}</b> {plural(counts.orge)}</span>
+      <span>Autres cultures : <b>{counts.autres}</b> {plural(counts.autres)}</span>
+      {counts.pending > 0 && (
+        <small>{counts.analyzed}/{counts.total} parcelle(s) analysée(s)</small>
+      )}
+    </div>
+  );
+}
 
 export default function Analyses() {
   const analyses = useApp((s) => s.analyses);
   const user = useApp((s) => s.user)!;
+  const parcels = useApp((s) => s.parcels);
   const relaunch = useApp((s) => s.relaunchAnalysis);
   const deleteAnalysisHistory = useApp((s) => s.deleteAnalysisHistory);
+  const analyzeCultures = useApp((s) => s.analyzeAnalysisCultures);
+  const cultureJob = useApp((s) => s.cultureAnalysisJob);
   const flyTo = useApp((s) => s.flyTo);
   const select = useApp((s) => s.select);
   const navigate = useNavigate();
@@ -38,6 +56,12 @@ export default function Analyses() {
   };
 
   const counts = analyses.reduce<Record<string, number>>((m, a) => ((m[a.status] = (m[a.status] ?? 0) + 1), m), {});
+  const cultureCounts = useMemo(
+    () => new Map(analyses.map((analysis) => [analysis.id, cultureCountsForAnalysis(analysis, parcels)])),
+    [analyses, parcels],
+  );
+  const currentCounts = current ? cultureCounts.get(current.id) : undefined;
+  const currentCultureRunning = current ? cultureJob?.analysisId === current.id : false;
 
   /** Ouvre la carte sur la zone analysée (ou sur une parcelle détectée). */
   const showOnMap = (analysis: Analysis, parcel?: AnalysisParcel) => {
@@ -73,41 +97,58 @@ export default function Analyses() {
         ) : (
           <div className="tablewrap tablewrap--page">
             <table className="table table--rows">
-              <thead><tr><th>Analyse</th><th>Périmètre</th><th>Saison</th><th>Statut</th><th>Avancement</th><th>Créée par</th><th>Date</th><th /></tr></thead>
+              <thead><tr><th>Analyse</th><th>Périmètre</th><th>Saison</th><th>Statut</th><th>Cultures</th><th>Avancement</th><th>Créée par</th><th>Date</th><th /></tr></thead>
               <tbody>
-                {analyses.map((a) => (
-                  <tr key={a.id} onClick={() => setOpen(a.id)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setOpen(a.id)}>
-                    <td>
-                      <div className="an-id">
-                        {a.captureDataUrl && <img className="an-thumb" src={a.captureDataUrl} alt="" loading="lazy" />}
-                        <span><b>{a.id}</b>{a.cached && <span className="tag">cache</span>}</span>
-                      </div>
-                    </td>
-                    <td>{a.zoneLabel}</td>
-                    <td>{SEASON_BY_ID[a.seasonId]?.short}</td>
-                    <td><AnalysisBadge status={a.status} /></td>
-                    <td className="conf-cell"><div className="conf"><div className="conf__fill" style={{ width: `${a.progress}%` }} /></div><span>{a.progress} %</span></td>
-                    <td>{a.createdBy}</td>
-                    <td>{fmtDate(a.createdAt, true)}</td>
-                    <td>
-                      <div className="an-actions">
-                        {a.zone && (
-                          <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}><MapPin size={13} /> Voir la carte</button>
-                        )}
-                        {a.status === 'echec' && can.launch && (
-                          <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); setConfirm(a.id); }}><RotateCcw size={13} /> Relancer</button>
-                        )}
-                        {can.correct && (
-                          <button
-                            className="btn btn--sm btn--danger"
-                            onClick={(e) => { e.stopPropagation(); setDeleting(a.id); }}
-                            aria-label={`Supprimer l'analyse ${a.id}`}
-                          ><Trash2 size={13} /> Supprimer</button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {analyses.map((a) => {
+                  const rowCounts = cultureCounts.get(a.id);
+                  const cultureRunning = cultureJob?.analysisId === a.id;
+                  return (
+                    <tr key={a.id} onClick={() => setOpen(a.id)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setOpen(a.id)}>
+                      <td>
+                        <div className="an-id">
+                          {a.captureDataUrl && <img className="an-thumb" src={a.captureDataUrl} alt="" loading="lazy" />}
+                          <span><b>{a.id}</b>{a.cached && <span className="tag">cache</span>}</span>
+                        </div>
+                      </td>
+                      <td>{a.zoneLabel}</td>
+                      <td>{SEASON_BY_ID[a.seasonId]?.short}</td>
+                      <td><AnalysisBadge status={a.status} /></td>
+                      <td>{rowCounts && <CultureCounts counts={rowCounts} />}</td>
+                      <td className="conf-cell"><div className="conf"><div className="conf__fill" style={{ width: `${a.progress}%` }} /></div><span>{a.progress} %</span></td>
+                      <td>{a.createdBy}</td>
+                      <td>{fmtDate(a.createdAt, true)}</td>
+                      <td>
+                        <div className="an-actions">
+                          {can.launch && (
+                            <button
+                              className="btn btn--sm"
+                              onClick={(e) => { e.stopPropagation(); analyzeCultures(a.id); }}
+                              disabled={!a.detected?.length || (!!cultureJob && !cultureRunning)}
+                              title={!a.detected?.length ? 'Aucune parcelle détectée dans cette analyse' : undefined}
+                            >
+                              {cultureRunning
+                                ? <><Loader2 size={13} className="capture-progress__spin" /> Analyse {cultureJob?.done ?? 0}/{cultureJob?.total ?? 0}</>
+                                : <><ScanSearch size={13} /> Analyser les cultures</>}
+                            </button>
+                          )}
+                          {a.zone && (
+                            <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}><MapPin size={13} /> Voir la carte</button>
+                          )}
+                          {a.status === 'echec' && can.launch && (
+                            <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); setConfirm(a.id); }}><RotateCcw size={13} /> Relancer</button>
+                          )}
+                          {can.correct && (
+                            <button
+                              className="btn btn--sm btn--danger"
+                              onClick={(e) => { e.stopPropagation(); setDeleting(a.id); }}
+                              aria-label={`Supprimer l'analyse ${a.id}`}
+                            ><Trash2 size={13} /> Supprimer</button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -125,6 +166,17 @@ export default function Analyses() {
               {can.correct && (
                 <button className="btn btn--danger" onClick={() => setDeleting(current.id)}><Trash2 size={14} /> Supprimer</button>
               )}
+              {can.launch && (
+                <button
+                  className="btn"
+                  onClick={() => analyzeCultures(current.id)}
+                  disabled={!current.detected?.length || (!!cultureJob && !currentCultureRunning)}
+                >
+                  {currentCultureRunning
+                    ? <><Loader2 size={14} className="capture-progress__spin" /> Analyse {cultureJob?.done ?? 0}/{cultureJob?.total ?? 0}</>
+                    : <><ScanSearch size={14} /> Analyser les cultures</>}
+                </button>
+              )}
               <button className="btn btn--primary" onClick={() => showOnMap(current)}><MapPin size={14} /> Voir la carte</button>
             </>
           ) : undefined}
@@ -133,6 +185,7 @@ export default function Analyses() {
             <AnalysisBadge status={current.status} />
             <span>{current.zoneLabel} · {SEASON_BY_ID[current.seasonId]?.label}</span>
           </div>
+          {currentCounts && <CultureCounts counts={currentCounts} />}
           {current.error && <p className="note note--danger">{current.error}</p>}
           {current.warnings.map((w, i) => <p key={i} className="note note--warn">{w}</p>)}
           {current.captureDataUrl && (

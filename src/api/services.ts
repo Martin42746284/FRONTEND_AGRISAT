@@ -233,6 +233,12 @@ export interface ZoneParcelsResult {
   [k: string]: unknown;
 }
 
+/** Palier réel de la capture / détection, relayé par le flux NDJSON. */
+export interface GeminiParcelsProgress {
+  percent: number;
+  label: string;
+}
+
 /** Payload POST /api/gemini-parcels — capture satellite + détection des parcelles. */
 export interface GeminiParcelsPayload {
   latitude: number;
@@ -454,6 +460,87 @@ export const api = {
       body: JSON.stringify(payload),
       signal: signal ?? null,
     }, GEMINI_PARCELS_TIMEOUT_MS);
+  },
+
+  /**
+   * Même détection que `geminiParcels`, mais en flux NDJSON : chaque palier
+   * transmis par le backend correspond à un travail réellement terminé
+   * (tuiles téléchargées, fenêtres Gemini, écriture en base).
+   */
+  async geminiParcelsStream(
+    payload: GeminiParcelsPayload,
+    onProgress: (progress: GeminiParcelsProgress) => void,
+    signal?: AbortSignal,
+  ): Promise<GeminiParcelsResult> {
+    const ctrl = new AbortController();
+    const external = signal ?? null;
+    const onAbort = () => ctrl.abort();
+    if (external?.aborted) ctrl.abort();
+    else external?.addEventListener('abort', onAbort);
+    const timer = setTimeout(() => ctrl.abort(), GEMINI_PARCELS_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/gemini-parcels/stream`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/x-ndjson',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        const reason = detail?.detail ?? detail?.error;
+        throw new Error(`Malto ${res.status} ${res.statusText}${reason ? ` — ${reason}` : ''}`);
+      }
+      if (!res.body) throw new Error('Flux de progression indisponible sur ce navigateur.');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let result: GeminiParcelsResult | null = null;
+
+      const handleLine = (raw: string) => {
+        if (!raw.trim()) return;
+        const event = JSON.parse(raw) as
+          | { type: 'progress'; percent: number; label: string }
+          | { type: 'result'; result: GeminiParcelsResult }
+          | { type: 'error'; error: string };
+        if (event.type === 'progress') {
+          onProgress({ percent: event.percent, label: event.label });
+        } else if (event.type === 'result') {
+          result = event.result;
+        } else {
+          throw new Error(`Malto — ${event.error}`);
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline = buffer.indexOf('\n');
+        while (newline >= 0) {
+          handleLine(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+          newline = buffer.indexOf('\n');
+        }
+      }
+      handleLine(buffer);
+
+      if (!result) throw new Error('Le serveur n’a pas renvoyé le résultat de la détection.');
+      return result;
+    } catch (err) {
+      if (external?.aborted) throw new Error('Requête annulée : /api/gemini-parcels/stream');
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw new Error(`Malto — délai dépassé sur /api/gemini-parcels/stream (${GEMINI_PARCELS_TIMEOUT_MS / 1000}s).`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      external?.removeEventListener('abort', onAbort);
+    }
   },
 
   /**

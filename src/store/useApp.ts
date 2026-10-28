@@ -8,9 +8,13 @@ import { AREA_MAX, DEFAULT_COLORS, DEFAULT_SEASON, PIPELINE_STEPS, CURRENT_MODEL
 import { api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectionResult, type ParcelUpdate, type AuditEntryCreate } from '../api/services';
 import { maltoToFrontend, maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
 import { centroidOf, isDuplicateVhrParcel, pointInPolygon, ringAreaHa } from '../lib/geometry';
-import { analyzedParcelIds, parcelIdsOfAnalysis, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
+import {
+  analyzedParcelIds, cultureCountsForAnalysis, isAnalyzedParcel, parcelIdsOfAnalysis,
+  parcelsForAnalysis, pendingCultureParcelsForAnalysis, toTracedParcelInput,
+} from '../lib/analysis-parcels';
 import { correctionText, withCorrectedClass } from '../lib/culture-sync';
 import { captureThumbnail } from '../lib/capture-image';
+import { statusFromConfidence } from '../lib/parcel-status';
 import {
   isExplicitParcel, isManualParcel, REJECTED_PARCEL_SOURCE,
 } from '../lib/parcel-sources';
@@ -64,6 +68,25 @@ export interface CaptureAnalysisInput {
   warnings?: string[];
   /** Message d'erreur : l'analyse est consignée en échec. */
   error?: string;
+}
+
+/** Options d'une analyse unitaire de parcelle. */
+export interface AnalyzeParcelOptions {
+  /** Relance explicite : remplace les données d'une parcelle déjà analysée. */
+  force?: boolean;
+  /** Analyse de lot en arrière-plan : ne bloque pas l'interface et ne change pas la sélection. */
+  background?: boolean;
+  /** Aucun retour unitaire : le lot affiche son propre message à la fin. */
+  silent?: boolean;
+  /** Saison sous laquelle enregistrer le résultat (par défaut, le filtre courant). */
+  seasonId?: string;
+}
+
+/** Avancement du lot « Analyser les cultures » d'un historique. */
+export interface CultureAnalysisJob {
+  analysisId: string;
+  done: number;
+  total: number;
 }
 
 /** Résumé du dernier traçage automatique (contours IA — à présenter comme indicatifs). */
@@ -143,6 +166,14 @@ interface State {
    * Renvoie `false` (et conserve l'entrée) en cas d'échec serveur.
    */
   deleteAnalysisHistory: (id: string) => Promise<boolean>;
+  /**
+   * Lance en arrière-plan l'analyse des cultures des parcelles d'un historique.
+   * Seules les parcelles encore sans résultat sont traitées ; les autres sont
+   * conservées telles quelles. La navigation reste possible pendant le traitement.
+   */
+  analyzeAnalysisCultures: (id: string) => void;
+  /** Lot d'analyse des cultures en cours, tous historiques confondus. */
+  cultureAnalysisJob: CultureAnalysisJob | null;
 
   drawing: boolean; drawMode: 'zone' | 'parcel'; draft: LatLng[]; zone: LatLng[] | null; manualParcelDraft: LatLng[] | null;
   toasts: Toast[];
@@ -204,7 +235,7 @@ interface State {
    * déjà analysée conserve ses données tant que l'utilisateur n'a pas confirmé
    * la relance (`force`).
    */
-  analyzeParcel: (id: string, options?: { force?: boolean }) => Promise<void>;
+  analyzeParcel: (id: string, options?: AnalyzeParcelOptions) => Promise<boolean>;
   addTracedParcels: (added: Parcel[], info: TraceInfo) => number;  setAutomaticDetection: (result: AutomaticDetectionResult | null) => void;
   setAutomaticSearchCenter: (center: LatLng | null) => void;
   setAutomaticSearchRadius: (radiusM: number | null) => void;
@@ -216,6 +247,8 @@ interface State {
 
 let toastSeq = 1;
 let flySeq = 1;
+/** Un seul lot « Analyser les cultures » à la fois : le backend traite les parcelles en série. */
+let cultureAnalysisRunning = false;
 const rint = (a: number, b: number) => Math.floor(a + Math.random() * (b - a + 1));
 
 export const useApp = create<State>()(
@@ -289,6 +322,7 @@ export const useApp = create<State>()(
       setSearchedLocation: (location) => set({ searchedLocation: location }),
       drawing: false, drawMode: 'zone', draft: [], zone: null, manualParcelDraft: null,
       analyzingParcelId: null,
+      cultureAnalysisJob: null,
       toasts: [],
       traceInfo: null,
       rejectedParcels: [],
@@ -732,14 +766,19 @@ export const useApp = create<State>()(
         const s = get();
         const parcel = s.parcels.find((p) => p.id === id);
         if (!parcel) {
-          s.toast('Parcelle introuvable.', 'warn');
-          return;
+          if (!options?.silent) s.toast('Parcelle introuvable.', 'warn');
+          return false;
         }
-        if (s.analyzingParcelId) {
+        const background = options?.background === true;
+        const silent = options?.silent === true || background;
+        const seasonId = options?.seasonId ?? s.filters.seasonId;
+        // Une analyse de fiche bloque les autres analyses unitaires, mais pas le
+        // lot d'arrière-plan : celui-ci doit pouvoir continuer pendant la navigation.
+        if (!background && s.analyzingParcelId) {
           s.toast('Une analyse de parcelle est déjà en cours.', 'warn');
-          return;
+          return false;
         }
-        set({ analyzingParcelId: id });
+        if (!background) set({ analyzingParcelId: id });
         try {
           // Seule la parcelle sélectionnée est transmise : les parcelles
           // environnantes ne sont ni analysées ni modifiées.
@@ -753,37 +792,127 @@ export const useApp = create<State>()(
           });
 
           const [updated] = maltoToFrontend([result.parcelle], { regions: s.regions, communes: s.communes });
-          if (updated) {
-            // La ligne enregistrée remplace le contour affiché (identifiant de base
-            // pour une parcelle déjà en base, nouveau UUID sinon) ; les corrections
-            // terrain saisies par l'utilisateur sont conservées.
-            const newResult = Object.values(updated.results)[0];
-            const merged: Parcel = {
-              ...updated,
-              corrections: parcel.corrections,
-              results: {
-                ...parcel.results,
-                ...(newResult ? { [s.filters.seasonId]: { ...newResult, seasonId: s.filters.seasonId } } : {}),
-              },
-            };
-            set((st) => ({
-              parcels: [...st.parcels.filter((p) => p.id !== parcel.id), merged],
-              selectedId: merged.id,
-            }));
+          if (!updated) return false;
+          // Relire la parcelle avant fusion : une correction ou une autre analyse
+          // a pu être enregistrée pendant l'appel réseau.
+          const current = get().parcels.find((p) => p.id === parcel.id) ?? parcel;
+          // La ligne enregistrée remplace le contour affiché (identifiant de base
+          // pour une parcelle déjà en base, nouveau UUID sinon) ; les corrections
+          // terrain saisies par l'utilisateur sont conservées.
+          const newResult = updated.results[seasonId] ?? Object.values(updated.results)[0];
+          const merged: Parcel = {
+            ...updated,
+            corrections: current.corrections,
+            results: {
+              ...current.results,
+              ...(newResult ? { [seasonId]: { ...newResult, seasonId } } : {}),
+            },
+          };
+          set((st) => ({
+            parcels: st.parcels.map((p) => (p.id === parcel.id ? merged : p)),
+            ...(!background ? { selectedId: merged.id } : {}),
+          }));
+          if (!silent) {
             get().logAudit('Analyse de parcelle', `Parcelle ${merged.id}`);
+            get().toast(
+              result.created
+                ? 'Parcelle analysée et enregistrée en base.'
+                : 'Analyse terminée — les données de la parcelle sont à jour.',
+              'ok',
+            );
           }
-          get().toast(
-            result.created
-              ? 'Parcelle analysée et enregistrée en base.'
-              : 'Analyse terminée — les données de la parcelle sont à jour.',
-            'ok',
-          );
+          return true;
         } catch (err) {
           console.warn('[AgriSat] Analyse de parcelle impossible :', err);
-          get().toast(err instanceof Error ? err.message : 'Analyse de parcelle impossible.', 'danger');
+          if (!silent) get().toast(err instanceof Error ? err.message : 'Analyse de parcelle impossible.', 'danger');
+          return false;
         } finally {
-          set({ analyzingParcelId: null });
+          if (!background) set({ analyzingParcelId: null });
         }
+      },
+
+      analyzeAnalysisCultures: (id) => {
+        const s = get();
+        if (cultureAnalysisRunning) {
+          s.toast('Une analyse des cultures est déjà en cours. Elle continue en arrière-plan.', 'info');
+          return;
+        }
+        const entry = s.analyses.find((analysis) => analysis.id === id)
+          ?? s.captureHistory.find((analysis) => analysis.id === id);
+        if (!entry) {
+          s.toast('Analyse introuvable.', 'warn');
+          return;
+        }
+        if (!entry.detected?.length) {
+          s.toast('Aucune parcelle à analyser pour cette analyse.', 'warn');
+          return;
+        }
+        // Instantané des seules parcelles sans résultat ; l'état est revérifié
+        // avant chaque appel pour ne jamais réanalyser une parcelle terminée.
+        const targets = pendingCultureParcelsForAnalysis(entry, s.parcels);
+        if (!targets.length) {
+          const counts = cultureCountsForAnalysis(entry, s.parcels);
+          s.toast(
+            counts.total && counts.pending === 0
+              ? 'Toutes les parcelles de cette analyse ont déjà un résultat cultural.'
+              : counts.total
+                ? 'Les parcelles restantes sont introuvables ou supprimées : impossible de reprendre cette analyse.'
+                : 'Aucune parcelle à analyser pour cette analyse.',
+            counts.total && counts.pending === 0 ? 'info' : 'warn',
+          );
+          return;
+        }
+
+        cultureAnalysisRunning = true;
+        set({ cultureAnalysisJob: { analysisId: id, done: 0, total: targets.length } });
+        // Volontairement détaché du composant : changer de page n'interrompt pas
+        // le traitement et chaque résultat est enregistré au fur et à mesure.
+        void (async () => {
+          let done = 0;
+          let failures = 0;
+          let cancelled = false;
+          try {
+            for (const target of targets) {
+              const stillExists = get().analyses.some((analysis) => analysis.id === id)
+                || get().captureHistory.some((analysis) => analysis.id === id);
+              if (!stillExists) {
+                cancelled = true;
+                break;
+              }
+              const current = get().parcels.find((parcel) => parcel.id === target.id);
+              if (current && !current.rejected && !isAnalyzedParcel(current)) {
+                const analyzed = await get().analyzeParcel(target.id, {
+                  background: true,
+                  silent: true,
+                  seasonId: entry.seasonId,
+                });
+                const updated = get().parcels.find((parcel) => parcel.id === target.id);
+                if (!analyzed || !updated || !isAnalyzedParcel(updated)) failures += 1;
+              }
+              done += 1;
+              set({ cultureAnalysisJob: { analysisId: id, done, total: targets.length } });
+            }
+          } catch (error) {
+            console.warn('[AgriSat] Analyse des cultures interrompue :', error);
+            failures = Math.max(1, failures);
+          } finally {
+            cultureAnalysisRunning = false;
+            set({ cultureAnalysisJob: null });
+          }
+
+          if (!cancelled) {
+            const analyzedCount = Math.max(0, done - failures);
+            if (failures) {
+              get().toast(
+                `${analyzedCount} parcelle(s) analysée(s), ${failures} en échec — relancez l’analyse pour reprendre les parcelles restantes.`,
+                'warn',
+              );
+            } else {
+              get().toast('Analyse des cultures terminée', 'ok');
+            }
+            get().logAudit('Analyse des cultures', `${id} · ${analyzedCount}/${targets.length} parcelle(s)`);
+          }
+        })();
       },
 
       createAnalysis: ({ zoneLabel, regionId, communeId, seasonId, zone }) => {
@@ -1262,7 +1391,7 @@ async function runMaltoPipeline(
               culture: 'orge' as CultureId,
               confidence: c.conf,
               probs: { orge: c.conf } as Partial<Record<CultureId, number>>,
-              status: 'non_verifie' as const,
+              status: statusFromConfidence('orge', c.conf),
               analysisId: id,
               modelVersion: `Malto RF orge${c.ndvi != null ? ` · NDVI ${Math.round(c.ndvi)} %` : ''}`,
               processedAt: stamp(),

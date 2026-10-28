@@ -17,6 +17,7 @@
  */
 import type { CropResult, CultureDetail, CultureId, LatLng, Parcel, Status, Region, Commune } from '../types';
 import { pointInPolygon, ringAreaHa } from '../lib/geometry';
+import { statusFromConfidence } from '../lib/parcel-status';
 import { request } from './http';
 import { DEFAULT_SEASON, SEASON_BY_ID, CURRENT_MODEL } from '../data/constants';
 
@@ -149,14 +150,19 @@ function mapConfidence(p: MaltoParcel): number {
     return Math.min(0.99, Math.max(0.05, conf));
   }
   
-  /** Statut dérivé : verdict Malto → workflow frontal. */
-function mapStatus(p: MaltoParcel, conf: number): Status {
+/**
+ * Statut dérivé : verdict Malto → workflow frontal.
+ *
+ * Les statuts manuels (vérifié terrain, corrigé, obsolète) restent prioritaires.
+ * Pour une parcelle d'orge, le statut suit ensuite la confiance affichée :
+ * 65 % ou plus → « Confirmé », moins de 65 % → « À vérifier ».
+ */
+function mapStatus(p: MaltoParcel, conf: number, culture: CultureId): Status {
   const v = (p.verdict ?? '').toLowerCase();
   if (v.includes('validé') || v.includes('valide') || v.includes('terrain')) return 'verifie_terrain';
   if (v.includes('corrig')) return 'corrige';
   if (v.includes('obsol')) return 'obsolete';
-  if (conf < 0.5) return 'incertain';
-  return 'non_verifie';
+  return statusFromConfidence(culture, conf);
 }
 
 /** Saison : id connu → tel quel ; sinon (ex. stade «Montaison») saison par défaut. */
@@ -258,7 +264,7 @@ export function maltoToFrontend(parcels: MaltoParcel[], zones?: MaltoZoneInfo): 
         culture,
         confidence: conf,
         probs: { [culture]: conf } as Partial<Record<CultureId, number>>,
-        status: mapStatus(p, conf),
+        status: mapStatus(p, conf, culture),
         analysisId: `MALTO-${p.id.slice(0, 8)}`,
         modelVersion: `Malto FTW${season.stage !== season.id ? ` · ${season.stage}` : ''} (RF ${CURRENT_MODEL.includes('RF') ? CURRENT_MODEL : ''})`.trim(),
         processedAt,
