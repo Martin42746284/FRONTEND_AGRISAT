@@ -31,6 +31,36 @@ function outlineZIndex(parcel: Parcel): number {
 }
 const MAP_CONTAINER_STYLE = { width: '100%', height: '100%' };
 
+/** Épingle commune aux bornes, à l'emplacement recherché et au brouillon. */
+const PIN_PATH = 'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5z';
+
+function pinIcon(color: string, scale: number): google.maps.Symbol {
+  return {
+    path: PIN_PATH,
+    fillColor: color,
+    fillOpacity: 1,
+    strokeColor: '#fff',
+    strokeWeight: 1.6,
+    scale,
+    anchor: new google.maps.Point(12, 23),
+  };
+}
+
+/** Contenu texte de la bulle : jamais de HTML interpolé avec un nom saisi. */
+function locationInfo(title: string, lat: number, lng: number, kind: 'borne' | 'coords'): HTMLElement {
+  const root = document.createElement('div');
+  root.className = 'borne-info';
+  root.dataset.kind = kind;
+  const type = document.createElement('em');
+  type.textContent = kind === 'borne' ? 'Borne GPS' : 'Emplacement recherché';
+  const name = document.createElement('strong');
+  name.textContent = title;
+  const coords = document.createElement('span');
+  coords.textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  root.append(type, name, coords);
+  return root;
+}
+
 export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const [map, setMap] = useState<google.maps.Map | null>(null);
   const parcels = useApp((s) => s.parcels);
@@ -53,6 +83,10 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const automaticSearchRadius = useApp((s) => s.automaticSearchRadius);
   const editingParcelId = useApp((s) => s.editingParcelId);
   const geminiCapture = useApp((s) => s.geminiCapture);
+  const bornes = useApp((s) => s.bornes);
+  const bornePlacement = useApp((s) => s.bornePlacement);
+  const borneDraft = useApp((s) => s.borneDraft);
+  const searchedLocation = useApp((s) => s.searchedLocation);
 
   // Emprise de toutes les parcelles affichables : elle sert au cadrage d'ouverture.
   const parcelsBounds = useMemo(
@@ -74,14 +108,19 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const searchCenterMarker = useRef<google.maps.Marker | null>(null);
   const searchRadiusCircle = useRef<google.maps.Circle | null>(null);
   const captureRectangle = useRef<google.maps.Rectangle | null>(null);
+  const borneMarkers = useRef<google.maps.Marker[]>([]);
+  const draftBorneMarker = useRef<google.maps.Marker | null>(null);
+  const searchedMarker = useRef<google.maps.Marker | null>(null);
+  const infoWindow = useRef<google.maps.InfoWindow | null>(null);
   /** L'ouverture a déjà été recadrée sur l'ensemble des parcelles. */
   const fitAllDone = useRef(false);
   /** L'utilisateur a déplacé la carte : on ne la recadre plus sous ses doigts. */
   const userMovedMap = useRef(false);
 
-  const latest = useRef({ parcels: new Map<string, Parcel>(), drawing, automaticSearchCenter });
+  const latest = useRef({ parcels: new Map<string, Parcel>(), drawing, automaticSearchCenter, bornePlacement });
   latest.current.drawing = drawing;
   latest.current.automaticSearchCenter = automaticSearchCenter;
+  latest.current.bornePlacement = bornePlacement;
   const center = useMemo(() => ({ lat: DEFAULT_MAP_CENTER[0], lng: DEFAULT_MAP_CENTER[1] }), []);
   const mapOptions = useMemo<google.maps.MapOptions>(() => ({
     mapTypeId: basemap === 'satellite' ? 'satellite' : 'roadmap',
@@ -123,10 +162,16 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       userMovedMap.current = true;
     });
     const click = map.addListener('click', (event: google.maps.MapMouseEvent) => {
+      const state = useApp.getState();
+      if (state.bornePlacement && event.latLng) {
+        state.placeBorneDraft([event.latLng.lat(), event.latLng.lng()]);
+        return;
+      }
+      infoWindow.current?.close();
       if (latest.current.drawing && event.latLng) {
-        useApp.getState().addDraftPoint([event.latLng.lat(), event.latLng.lng()]);
+        state.addDraftPoint([event.latLng.lat(), event.latLng.lng()]);
       } else if (latest.current.automaticSearchCenter && event.latLng) {
-        useApp.getState().setAutomaticSearchCenter([event.latLng.lat(), event.latLng.lng()]);
+        state.setAutomaticSearchCenter([event.latLng.lat(), event.latLng.lng()]);
       }
     });
     syncView();
@@ -148,7 +193,16 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       communeLayers.current = [];
       automaticLayers.current.forEach((layer) => layer.setMap(null));
       automaticLayers.current = [];
+      borneMarkers.current.forEach((marker) => marker.setMap(null));
+      borneMarkers.current = [];
+      draftBorneMarker.current?.setMap(null);
+      draftBorneMarker.current = null;
+      searchedMarker.current?.setMap(null);
+      searchedMarker.current = null;
+      infoWindow.current?.close();
+      infoWindow.current = null;
       map.getDiv().classList.remove('is-drawing');
+      map.getDiv().classList.remove('is-placing-borne');
       onMap.current.clear();
     };
   }, [map]);
@@ -226,6 +280,112 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     };
   }, [map, geminiCapture]);
 
+  // Bornes GPS enregistrées : épingles teal, rose pour celle sélectionnée dans
+  // la recherche. La bulle n'est ouverte que pour la borne recherchée.
+  useEffect(() => {
+    borneMarkers.current.forEach((marker) => marker.setMap(null));
+    borneMarkers.current = [];
+    if (!map) return;
+    if (bornes.length === 0) {
+      if (searchedLocation?.kind !== 'coords') infoWindow.current?.close();
+      return;
+    }
+
+    const info = infoWindow.current ?? new google.maps.InfoWindow();
+    infoWindow.current = info;
+    let selectedMarker: google.maps.Marker | null = null;
+
+    for (const borne of bornes) {
+      const selected = searchedLocation?.kind === 'borne' && searchedLocation.borneId === borne.id;
+      const marker = new google.maps.Marker({
+        map,
+        position: { lat: borne.lat, lng: borne.lng },
+        title: `Borne GPS — ${borne.name}`,
+        zIndex: selected ? google.maps.Marker.MAX_ZINDEX + 3 : 6000,
+        icon: pinIcon(selected ? '#E11D48' : '#0F7F86', selected ? 2.05 : 1.65),
+      });
+      marker.addListener('click', () => {
+        const state = useApp.getState();
+        state.setSearchedLocation({
+          kind: 'borne',
+          lat: borne.lat,
+          lng: borne.lng,
+          label: borne.name,
+          borneId: borne.id,
+        });
+        state.flyTo({ center: [borne.lat, borne.lng], zoom: 18 });
+      });
+      borneMarkers.current.push(marker);
+      if (selected) selectedMarker = marker;
+    }
+
+    if (selectedMarker && searchedLocation?.kind === 'borne') {
+      info.setContent(locationInfo(searchedLocation.label, searchedLocation.lat, searchedLocation.lng, 'borne'));
+      info.open({ map, anchor: selectedMarker });
+    } else if (!searchedLocation) {
+      info.close();
+    }
+
+    return () => {
+      borneMarkers.current.forEach((marker) => marker.setMap(null));
+      borneMarkers.current = [];
+    };
+  }, [map, bornes, searchedLocation]);
+
+  // Emplacement trouvé par saisie de coordonnées : épingle bleue distincte des bornes.
+  useEffect(() => {
+    searchedMarker.current?.setMap(null);
+    searchedMarker.current = null;
+    if (!map || searchedLocation?.kind !== 'coords') return;
+
+    const marker = new google.maps.Marker({
+      map,
+      position: { lat: searchedLocation.lat, lng: searchedLocation.lng },
+      title: 'Emplacement recherché',
+      zIndex: google.maps.Marker.MAX_ZINDEX + 4,
+      icon: pinIcon('#2563EB', 2.1),
+    });
+    searchedMarker.current = marker;
+
+    const info = infoWindow.current ?? new google.maps.InfoWindow();
+    infoWindow.current = info;
+    info.setContent(locationInfo(searchedLocation.label, searchedLocation.lat, searchedLocation.lng, 'coords'));
+    info.open({ map, anchor: marker });
+
+    return () => {
+      marker.setMap(null);
+      if (searchedMarker.current === marker) searchedMarker.current = null;
+    };
+  }, [map, searchedLocation]);
+
+  // Point d'atterrissage du mode placement, avant validation du nom.
+  useEffect(() => {
+    draftBorneMarker.current?.setMap(null);
+    draftBorneMarker.current = null;
+    if (!map || !borneDraft) return;
+    const marker = new google.maps.Marker({
+      map,
+      position: { lat: borneDraft[0], lng: borneDraft[1] },
+      title: 'Nouvelle borne GPS',
+      zIndex: google.maps.Marker.MAX_ZINDEX + 5,
+      icon: pinIcon('#E3B505', 2.1),
+    });
+    draftBorneMarker.current = marker;
+    return () => {
+      marker.setMap(null);
+      if (draftBorneMarker.current === marker) draftBorneMarker.current = null;
+    };
+  }, [map, borneDraft]);
+
+  // Curseur en croix pendant le placement d'une borne.
+  useEffect(() => {
+    if (!map) return;
+    const div = map.getDiv();
+    div.classList.toggle('is-placing-borne', bornePlacement);
+    if (bornePlacement) infoWindow.current?.close();
+    return () => div.classList.remove('is-placing-borne');
+  }, [bornePlacement, map]);
+
   // Fond de carte Google : imagerie satellite ou plan routier.
   useEffect(() => {
     if (map) map.setMapTypeId(basemap === 'satellite' ? 'satellite' : 'roadmap');
@@ -281,6 +441,14 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         clickable: true,
         zIndex: 2,
       });
+      // En mode placement, un clic sur une commune doit poser la borne au lieu
+      // d'être absorbé par le polygone.
+      polygon.addListener('click', (event: google.maps.MapMouseEvent) => {
+        const state = useApp.getState();
+        if (!state.bornePlacement || !event.latLng) return;
+        event.stop();
+        state.placeBorneDraft([event.latLng.lat(), event.latLng.lng()]);
+      });
       communeLayers.current.push(polygon);
     }
     return () => {
@@ -332,6 +500,14 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       });
       polygon.addListener('click', (event: google.maps.PolyMouseEvent) => {
         const state = useApp.getState();
+        if (state.bornePlacement) {
+          if (event.latLng) {
+            event.stop();
+            state.placeBorneDraft([event.latLng.lat(), event.latLng.lng()]);
+          }
+          return;
+        }
+        if (state.borneDraft) return;
         if (state.drawing) return;
         // Un contour non classé (tracé manuel, VHR) peut recouvrir une parcelle
         // classée : le clic ouvre alors celle-ci pour afficher sa culture.
@@ -344,7 +520,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       // Double-clic : passe en édition du contour (sommets déplaçables). Droit limité par le rôle.
       polygon.addListener('dblclick', () => {
         const s = useApp.getState();
-        if (s.drawing) return;
+        if (s.drawing || s.bornePlacement || s.borneDraft) return;
         if (!s.user || !ROLES[s.user.role].can.correct) {
           s.toast('Votre profil ne permet pas de modifier le contour d’une parcelle.', 'warn');
           return;
@@ -382,7 +558,16 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         zIndex: 30,
       });
       polygon.addListener('click', (event: google.maps.MapMouseEvent) => {
-        useApp.getState().selectAutomaticParcel(candidate.id);
+        const state = useApp.getState();
+        if (state.bornePlacement) {
+          if (event.latLng) {
+            event.stop();
+            state.placeBorneDraft([event.latLng.lat(), event.latLng.lng()]);
+          }
+          return;
+        }
+        if (state.borneDraft) return;
+        state.selectAutomaticParcel(candidate.id);
       });
       automaticLayers.current.push(polygon);
 

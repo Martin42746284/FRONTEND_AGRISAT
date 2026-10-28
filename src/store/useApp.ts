@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type {
-  Analysis, AnalysisParcel, AuditEntry, Commune, CropResult, CultureId, Filters, LatLng, Parcel, Region, Role, User,
+  Analysis, AnalysisParcel, AuditEntry, BorneGps, Commune, CropResult, CultureId, Filters, LatLng, Parcel, Region, Role,
+  SearchedLocation, User,
 } from '../types';
 import { AREA_MAX, DEFAULT_COLORS, DEFAULT_SEASON, PIPELINE_STEPS, CURRENT_MODEL, ROLES } from '../data/constants';
 import { api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectionResult, type ParcelUpdate, type AuditEntryCreate } from '../api/services';
@@ -108,6 +109,21 @@ interface State {
   /** Zone couverte par la dernière capture Gemini, matérialisée sur la carte. */
   geminiCapture: GeminiCaptureArea | null;
   setGeminiCapture: (capture: GeminiCaptureArea | null) => void;
+
+  /** Bornes GPS enregistrées en base, affichées sur la carte. */
+  bornes: BorneGps[];
+  /** Mode « cliquer sur la carte pour placer une borne ». */
+  bornePlacement: boolean;
+  /** Point choisi, en attente du nom saisi par l'utilisateur. */
+  borneDraft: LatLng | null;
+  /** Borne ou coordonnées mises en évidence après une recherche. */
+  searchedLocation: SearchedLocation | null;
+  startBornePlacement: () => void;
+  cancelBornePlacement: () => void;
+  placeBorneDraft: (point: LatLng) => void;
+  cancelBorneDraft: () => void;
+  saveBorne: (name: string) => Promise<BorneGps>;
+  setSearchedLocation: (location: SearchedLocation | null) => void;
   /**
    * Ajoute des parcelles détectées par Gemini (déjà enregistrées en base).
    * Les identifiants déjà affichés sont ignorés : pas de doublon visuel.
@@ -232,6 +248,45 @@ export const useApp = create<State>()(
       }),
       geminiCapture: null,
       setGeminiCapture: (capture) => set({ geminiCapture: capture }),
+      bornes: [],
+      bornePlacement: false,
+      borneDraft: null,
+      searchedLocation: null,
+      startBornePlacement: () => {
+        const s = get();
+        if (s.drawing) {
+          s.toast('Terminez le tracé en cours avant de placer une borne GPS.', 'warn');
+          return;
+        }
+        set({ bornePlacement: true, borneDraft: null, selectedId: null, searchedLocation: null });
+        s.toast('Cliquez sur la carte pour placer la borne GPS.', 'info');
+      },
+      cancelBornePlacement: () => set({ bornePlacement: false }),
+      placeBorneDraft: (point) => set({ bornePlacement: false, borneDraft: point }),
+      cancelBorneDraft: () => set({ borneDraft: null }),
+      saveBorne: async (name) => {
+        const draft = get().borneDraft;
+        if (!draft) throw new Error('Aucun emplacement sélectionné pour la borne GPS.');
+        const created = await api.createBorneGps({
+          name: name.trim(),
+          lat: draft[0],
+          lng: draft[1],
+        });
+        set((s) => ({
+          bornes: [...s.bornes, created],
+          borneDraft: null,
+          searchedLocation: {
+            kind: 'borne',
+            lat: created.lat,
+            lng: created.lng,
+            label: created.name,
+            borneId: created.id,
+          },
+        }));
+        get().toast(`Borne GPS « ${created.name} » enregistrée.`, 'ok');
+        return created;
+      },
+      setSearchedLocation: (location) => set({ searchedLocation: location }),
       drawing: false, drawMode: 'zone', draft: [], zone: null, manualParcelDraft: null,
       analyzingParcelId: null,
       toasts: [],
@@ -278,6 +333,15 @@ export const useApp = create<State>()(
         } catch (err) {
           console.warn('[AgriSat] Échec du chargement de l\'audit :', err);
         }
+        // Bornes GPS : petit volume, chargé en une fois puis filtré côté client
+        // dans le champ de recherche. En cas d'échec, on conserve celles déjà
+        // affichées plutôt que de vider la carte.
+        let bornes = get().bornes;
+        try {
+          bornes = await api.listBornesGps();
+        } catch (err) {
+          console.warn('[AgriSat] Échec du chargement des bornes GPS :', err);
+        }
         // Les suppressions locales (écrites avant le rechargement) et celles relues
         // en base sont fusionnées : aucune ne doit être perdue si l'appel réseau a échoué.
         const rejectedParcels = mergeRejections(get().rejectedParcels, db.rejectedParcels);
@@ -291,6 +355,7 @@ export const useApp = create<State>()(
           // (qui remplace les analyses par celles de la base) l'effacerait.
           analyses: mergeCaptureHistory(db.analyses, get().captureHistory),
           users: db.users, audit,
+          bornes,
           rejectedParcels,
           ready: true,
         });

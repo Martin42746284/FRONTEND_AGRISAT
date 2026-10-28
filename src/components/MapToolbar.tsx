@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Crosshair, Eraser, Home, Layers, Loader2, PenTool, Search, Undo2, X, ScanSearch, Camera, Sparkles, Waypoints, Radar, Navigation, ThermometerSun } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
+import { Check, Crosshair, Eraser, Home, Layers, Loader2, MapPin, PenTool, Search, Undo2, X, ScanSearch, Camera, Sparkles, Waypoints, Radar, Navigation, ThermometerSun } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { bboxOf, centroidOf, M_PER_DEG_LAT, mPerDegLng, ringAreaHa } from '../lib/geometry';
 import { normalize, withoutToolName } from '../lib/format';
+import { parseCoordinates } from '../lib/coordinates';
 import { api, type AutomaticDetectionResult, type GeminiParcelsPayload, type GeminiParcelsResult } from '../api/services';
 import { maltoToFrontend, type MaltoParcel } from '../api/maltoAdapter';
 import { isAnalyzedParcel, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
@@ -42,6 +44,12 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const filtersOpen = useApp((s) => s.filtersOpen);
   const regions = useApp((s) => s.regions);
   const communes = useApp((s) => s.communes);
+  const bornes = useApp((s) => s.bornes);
+  const bornePlacement = useApp((s) => s.bornePlacement);
+  const startBornePlacement = useApp((s) => s.startBornePlacement);
+  const cancelBornePlacement = useApp((s) => s.cancelBornePlacement);
+  const setSearchedLocation = useApp((s) => s.setSearchedLocation);
+  const onMapPage = useLocation().pathname === '/carte';
   const flyTo = useApp((s) => s.flyTo);
   const basemap = useApp((s) => s.basemap);
   const setBasemap = useApp((s) => s.setBasemap);
@@ -135,6 +143,11 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     abortRef.current?.abort();
     clearProgressTimers();
   }, []);
+
+  // Le placement n'a de sens que sur la carte et jamais pendant un tracé.
+  useEffect(() => {
+    if ((!onMapPage || drawing) && bornePlacement) cancelBornePlacement();
+  }, [onMapPage, drawing, bornePlacement, cancelBornePlacement]);
 
   /**
    * Progression de la capture.
@@ -520,6 +533,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
       selectAutomaticParcel(null);
       return;
     }
+    cancelBornePlacement();
     setSearchOpen(false);
     setGeminiOpen(false);
     selectAutomaticParcel(null);
@@ -537,6 +551,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     const opening = !searchOpen;
     setSearchOpen(opening);
     if (!opening) return;
+    cancelBornePlacement();
     setAutoSearchOpen(false);
     setGeminiOpen(false);
     setAutomaticSearchCenter(null);
@@ -544,6 +559,49 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     selectAutomaticParcel(null);
     useApp.getState().select(null);
     useApp.getState().setFiltersOpen(false);
+  };
+
+  const toggleBornePlacement = () => {
+    if (bornePlacement) {
+      cancelBornePlacement();
+      return;
+    }
+    setSearchOpen(false);
+    setAutoSearchOpen(false);
+    setGeminiOpen(false);
+    setAutomaticSearchCenter(null);
+    setAutomaticSearchRadius(null);
+    selectAutomaticParcel(null);
+    useApp.getState().select(null);
+    useApp.getState().setFiltersOpen(false);
+    startBornePlacement();
+  };
+
+  const goToCoordinates = (point: { lat: number; lng: number }) => {
+    setSearchedLocation({
+      kind: 'coords',
+      lat: point.lat,
+      lng: point.lng,
+      label: 'Emplacement recherché',
+    });
+    useApp.getState().select(null);
+    flyTo({ center: [point.lat, point.lng], zoom: 18 });
+    setQ('');
+    setSearchOpen(false);
+  };
+
+  const goToBorne = (borne: { id: string; name: string; lat: number; lng: number }) => {
+    setSearchedLocation({
+      kind: 'borne',
+      lat: borne.lat,
+      lng: borne.lng,
+      label: borne.name,
+      borneId: borne.id,
+    });
+    useApp.getState().select(null);
+    flyTo({ center: [borne.lat, borne.lng], zoom: 18 });
+    setQ('');
+    setSearchOpen(false);
   };
 
   const closeGemini = () => {
@@ -557,6 +615,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
       closeGemini();
       return;
     }
+    cancelBornePlacement();
     setGeminiOpen(true);
     setSearchOpen(false);
     setAutoSearchOpen(false);
@@ -577,7 +636,11 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     }
   };
 
-  const results = useMemo(() => {
+  const coordinateResult = useMemo(() => parseCoordinates(q), [q]);
+  const coordinates = coordinateResult && 'lat' in coordinateResult ? coordinateResult : null;
+  const coordinateError = coordinateResult && 'error' in coordinateResult ? coordinateResult.error : null;
+
+  const placeResults = useMemo(() => {
     const n = normalize(q.trim());
     if (!n) return [];
     return [
@@ -585,6 +648,14 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
       ...communes.map((c) => ({ key: c.id, label: c.name, sub: `Commune · ${regions.find((r) => r.id === c.regionId)?.name}`, bounds: bboxOf(c.outline) })),
     ].filter((x) => normalize(x.label).includes(n)).slice(0, 6);
   }, [q, regions, communes]);
+
+  const borneResults = useMemo(() => {
+    const n = normalize(q.trim());
+    if (!n) return [];
+    return bornes.filter((borne) => normalize(borne.name).includes(n)).slice(0, 6);
+  }, [q, bornes]);
+
+  const hasSearchResult = !!coordinates || !!coordinateError || borneResults.length > 0 || placeResults.length > 0;
 
   useEffect(() => {
     if (!drawing) return;
@@ -601,11 +672,22 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
       <div className={`maptools ${autoSearchOpen ? 'maptools--autosearch' : ''} ${geminiOpen ? 'maptools--gemini' : ''} ${searchOpen ? 'maptools--search' : ''}`}>
         <div className="toolgroup glass" role="group" aria-label="Outils de carte">
           <div className="searchwrap">
-            <button className={`tool ${searchOpen ? 'tool--on' : ''}`} data-tip="Rechercher un lieu" aria-label="Rechercher un lieu" onClick={togglePlaceSearch}><Search size={18} /></button>
+            <button className={`tool ${searchOpen ? 'tool--on' : ''}`} data-tip="Rechercher une borne, un lieu ou des coordonnées" aria-label="Rechercher une borne, un lieu ou des coordonnées" onClick={togglePlaceSearch}><Search size={18} /></button>
           </div>
           <button className="tool" data-tip="Vue nationale" aria-label="Retour à l'emprise nationale" onClick={() => flyTo({ bounds: NATIONAL })}><Home size={18} /></button>
           <button className={`tool ${basemap === 'satellite' ? 'tool--on' : ''}`} data-tip={basemap === 'plan' ? 'Fond satellite' : 'Fond plan'} aria-label="Basculer plan / satellite" onClick={() => setBasemap(basemap === 'plan' ? 'satellite' : 'plan')}><Layers size={18} /></button>
           <button className={`tool ${showCoverage ? 'tool--on' : ''}`} data-tip="Couverture des analyses" aria-label="Afficher la couverture des analyses" onClick={() => setShowCoverage(!showCoverage)}><Crosshair size={18} /></button>
+          {onMapPage && !drawing && (
+            <button
+              className={`tool ${bornePlacement ? 'tool--on' : ''}`}
+              data-tip={bornePlacement ? 'Annuler le placement de la borne' : 'Placer une borne GPS'}
+              aria-label={bornePlacement ? 'Annuler le placement de la borne GPS' : 'Placer une borne GPS sur la carte'}
+              aria-pressed={bornePlacement}
+              onClick={toggleBornePlacement}
+            >
+              <MapPin size={18} />
+            </button>
+          )}
           <button className={`tool ${autoSearchOpen ? 'tool--on' : ''}`} data-tip="Recherche automatique orge / non-orge" aria-label="Ouvrir l’analyse automatique des cultures" aria-expanded={autoSearchOpen} onClick={toggleAutoSearch}><Radar size={18} /></button>
           <button className={`tool ${geminiOpen ? 'tool--on' : ''}`} data-tip="Capturer le terrain et détecter les parcelles" aria-label="Capturer le terrain et détecter les parcelles" aria-expanded={geminiOpen} onClick={toggleGemini}><Sparkles size={18} /></button>
           {!drawing && !zone && <button className="tool" data-tip="Dessiner une zone d’étude" aria-label="Dessiner une zone d’étude" onClick={startDraw}><PenTool size={18} /></button>}
@@ -615,13 +697,44 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         {searchOpen && (
           <div className="searchpop glass">
             <Search size={15} />
-            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ex. Antsirabe, Itasy…" aria-label="Rechercher un lieu" />
+            <input
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Borne, lieu ou latitude, longitude…"
+              aria-label="Rechercher une borne, un lieu ou des coordonnées"
+            />
             {q && (
               <ul className="searchpop__results">
-                {results.length === 0 && <li className="searchpop__none">Aucun lieu dans les zones pilotes.</li>}
-                {results.map((r) => (
-                  <li key={r.key}><button onClick={() => { flyTo({ bounds: r.bounds }); setQ(''); setSearchOpen(false); }}><b>{r.label}</b><span>{r.sub}</span></button></li>
+                {coordinates && (
+                  <li>
+                    <button onClick={() => goToCoordinates(coordinates)}>
+                      <b><Navigation size={12} /> Aller aux coordonnées</b>
+                      <span>{coordinates.lat.toFixed(6)}, {coordinates.lng.toFixed(6)}</span>
+                    </button>
+                  </li>
+                )}
+                {coordinateError && (
+                  <li className="searchpop__none searchpop__error" role="alert">
+                    <Crosshair size={12} /> {coordinateError}
+                  </li>
+                )}
+                {borneResults.map((borne) => (
+                  <li key={`borne-${borne.id}`}>
+                    <button onClick={() => goToBorne(borne)}>
+                      <b><MapPin size={12} /> {borne.name}</b>
+                      <span>Borne GPS · {borne.lat.toFixed(5)}, {borne.lng.toFixed(5)}</span>
+                    </button>
+                  </li>
                 ))}
+                {placeResults.map((r) => (
+                  <li key={`place-${r.key}`}>
+                    <button onClick={() => { setSearchedLocation(null); flyTo({ bounds: r.bounds }); setQ(''); setSearchOpen(false); }}>
+                      <b>{r.label}</b><span>{r.sub}</span>
+                    </button>
+                  </li>
+                ))}
+                {!hasSearchResult && <li className="searchpop__none">Aucune borne ni lieu trouvé.</li>}
               </ul>
             )}
           </div>

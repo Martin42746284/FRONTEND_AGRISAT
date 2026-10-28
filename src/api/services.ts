@@ -13,7 +13,7 @@
  * Configuration (fichier .env à la racine, cf. .env.example) :
  *   VITE_MALTO_API_URL=http://localhost:3001   ← sans slash final
  */
-import type { Analysis, AuditEntry, Commune, Parcel, Region, User } from '../types';
+import type { Analysis, AuditEntry, BorneGps, Commune, Parcel, Region, User } from '../types';
 import { request, API_BASE } from './http';
 import { bootstrapReal } from './realBootstrap';
 import type { MaltoParcel } from './maltoAdapter';
@@ -355,6 +355,33 @@ export interface AnalyzeParcelResult {
   already_analyzed: boolean;
 }
 
+/** Réponse brute de l'API bornes GPS (colonnes snake_case de la base). */
+interface BorneGpsDto {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateBorneGpsPayload {
+  name: string;
+  lat: number;
+  lng: number;
+}
+
+function toBorneGps(dto: BorneGpsDto): BorneGps {
+  return {
+    id: dto.id,
+    name: dto.name,
+    lat: dto.lat,
+    lng: dto.lng,
+    createdAt: dto.created_at,
+    updatedAt: dto.updated_at,
+  };
+}
+
 export const api = {
   /**
    * Charge les données réelles de la base au démarrage (aucune donnée fictive).
@@ -440,6 +467,36 @@ export const api = {
       signal: signal ?? null,
     }, ZONE_PARCELS_TIMEOUT_MS);
   },
+
+    /** Liste les bornes GPS enregistrées (filtre optionnel par nom). */
+    async listBornesGps(query?: string): Promise<BorneGps[]> {
+      const suffix = query?.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
+      const rows = await request<BorneGpsDto[]>(`/api/bornes-gps${suffix}`, {}, 30_000);
+      return rows.map(toBorneGps);
+    },
+
+    /** Enregistre une nouvelle borne GPS. */
+    async createBorneGps(payload: CreateBorneGpsPayload): Promise<BorneGps> {
+      const row = await request<BorneGpsDto>('/api/bornes-gps', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }, 30_000);
+      return toBorneGps(row);
+    },
+
+    /** Renomme une borne GPS existante. */
+    async renameBorneGps(id: string, name: string): Promise<BorneGps> {
+      const row = await request<BorneGpsDto>(`/api/bornes-gps/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      }, 30_000);
+      return toBorneGps(row);
+    },
+
+    /** Supprime une borne GPS. */
+    async deleteBorneGps(id: string): Promise<void> {
+      await request<void>(`/api/bornes-gps/${encodeURIComponent(id)}`, { method: 'DELETE' }, 30_000);
+    },
 
     /** Enregistre dans Malto une parcelle dessinée manuellement sur la carte. */
     async createParcel(payload: CreateMaltoParcelPayload): Promise<Record<string, unknown>> {

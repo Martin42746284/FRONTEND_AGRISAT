@@ -379,6 +379,30 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .searchpop input { border: 0; background: none; padding: 0; width: 100%; color: var(--ink); } .searchpop input:focus { outline: none; }
 .searchpop__results { position: absolute; top: calc(100% + 6px); left: 0; right: 0; list-style: none; margin: 0; padding: 4px; background: #fff; border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
 .searchpop__results button { width: 100%; text-align: left; background: none; border: 0; padding: 7px 8px; border-radius: 6px; display: flex; flex-direction: column; color: var(--ink); } .searchpop__results button:hover { background: var(--mist); } .searchpop__results span { font-size: 12px; color: var(--ink-3); } .searchpop__none { padding: 8px; font-size: 13px; color: var(--ink-3); }
+.searchpop__results b { display: flex; align-items: center; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
+.searchpop__results b svg { flex: none; color: var(--accent); }
+.searchpop__error { display: flex; align-items: center; gap: 6px; color: #B42318; background: #FEF3F2; border-radius: 6px; }
+.searchpop__error svg { flex: none; }
+.bornecard { position: absolute; z-index: 860; top: 76px; left: 50%; transform: translateX(-50%); width: min(360px, calc(100vw - 24px)); max-height: min(55vh, 480px); overflow: auto; overflow-wrap: anywhere; padding: 10px 12px; display: grid; gap: 8px; color: var(--ink); font-size: 13px; }
+.bornecard__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bornecard__title { display: flex; align-items: center; gap: 6px; font-weight: 650; }
+.bornecard__title svg { flex: none; color: var(--accent); }
+.bornecard__close { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--ink-2); cursor: pointer; }
+.bornecard__close:hover { background: rgba(18,38,43,.08); }
+.bornecard__coords { margin: 0; color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.bornecard__form { display: grid; gap: 8px; }
+.bornecard__form .field { margin: 0; }
+.bornecard__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.bornecard .hint { margin: 0; }
+.borne-info { display: grid; gap: 2px; color: var(--ink); font-size: 13px; }
+.borne-info em { font-style: normal; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); }
+.borne-info[data-kind="coords"] em { color: #2563EB; }
+.borne-info strong { font-size: 14px; }
+.borne-info span { color: var(--ink-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.map.is-placing-borne .gm-style * { cursor: crosshair !important; }
+@media (max-width: 720px) {
+  .bornecard { top: 92px; max-height: 48vh; }
+}
 .zonecard { width: min(320px, calc(100vw - 32px)); max-height: min(55vh, 520px); overflow: auto; overflow-wrap: anywhere; padding: 8px 10px; display: grid; gap: 6px; justify-items: stretch; font-size: 13px; } .zonecard .btn { justify-content: center; }
 .zonecard .hint, .zonecard .note { min-width: 0; overflow-wrap: anywhere; }
 .autosearch { position: absolute; top: 0; right: calc(100% + 8px); width: min(360px, calc(100vw - 32px)); max-height: min(78vh, 720px); overflow: auto; padding: 12px; color: var(--ink); }

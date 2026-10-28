@@ -112,6 +112,25 @@ export interface AuditEntry {
   id: string; at: string; userName: string; action: string; object: string;
 }
 
+/** Borne GPS nommée, enregistrée en base et affichée sur la carte. */
+export interface BorneGps {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Emplacement mis en évidence après une recherche (borne ou coordonnées GPS). */
+export interface SearchedLocation {
+  kind: 'borne' | 'coords';
+  lat: number;
+  lng: number;
+  label: string;
+  borneId?: string;
+}
+
 export interface LogLine { at: string; level: 'info' | 'warn' | 'error'; msg: string }
 
 /** Zone d'une analyse de terrain : emplacement et étendue de la capture. */

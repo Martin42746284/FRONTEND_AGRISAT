@@ -9,6 +9,7 @@ import FiltersPanel from '../components/FiltersPanel';
 import CultureRail from '../components/CultureRail';
 import MapView from '../components/MapView';
 import MapToolbar from '../components/MapToolbar';
+import BorneEditor from '../components/BorneEditor';
 import Legend from '../components/Legend';
 import NewAnalysisModal from '../components/NewAnalysisModal';
 import { Swatch } from '../components/ui';
@@ -99,6 +100,7 @@ export default function MapPage() {
       </section>
 
       <MapToolbar canLaunch={can.launch} onAnalyze={() => setAnalysis(true)} />
+      <BorneEditor />
       <Legend />
       {filtersOpen && <FiltersPanel floating onClose={() => setFiltersOpen(false)} />}
 
