@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';
 import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, useApp } from '../store/useApp';
 import { computeStyle } from '../lib/style';
-import { ringAreaHa } from '../lib/geometry';
+import { bboxOfAll, ringAreaHa } from '../lib/geometry';
 import { ROLES } from '../data/constants';
 import type { Parcel } from '../types';
 import { isAnalyzedParcel } from '../lib/analysis-parcels';
@@ -54,6 +54,12 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const editingParcelId = useApp((s) => s.editingParcelId);
   const geminiCapture = useApp((s) => s.geminiCapture);
 
+  // Emprise de toutes les parcelles affichables : elle sert au cadrage d'ouverture.
+  const parcelsBounds = useMemo(
+    () => bboxOfAll(parcels.filter((parcel) => !parcel.rejected).map((parcel) => parcel.coords)),
+    [parcels],
+  );
+
   const parcelLayers = useRef(new Map<string, google.maps.Polygon>());
   const onMap = useRef(new Set<string>());
   const regionLayers = useRef<google.maps.Polygon[]>([]);
@@ -68,6 +74,10 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const searchCenterMarker = useRef<google.maps.Marker | null>(null);
   const searchRadiusCircle = useRef<google.maps.Circle | null>(null);
   const captureRectangle = useRef<google.maps.Rectangle | null>(null);
+  /** L'ouverture a déjà été recadrée sur l'ensemble des parcelles. */
+  const fitAllDone = useRef(false);
+  /** L'utilisateur a déplacé la carte : on ne la recadre plus sous ses doigts. */
+  const userMovedMap = useRef(false);
 
   const latest = useRef({ parcels: new Map<string, Parcel>(), drawing, automaticSearchCenter });
   latest.current.drawing = drawing;
@@ -109,6 +119,9 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       }
     };
     const idle = map.addListener('idle', syncView);
+    const dragStart = map.addListener('dragstart', () => {
+      userMovedMap.current = true;
+    });
     const click = map.addListener('click', (event: google.maps.MapMouseEvent) => {
       if (latest.current.drawing && event.latLng) {
         useApp.getState().addDraftPoint([event.latLng.lat(), event.latLng.lng()]);
@@ -119,6 +132,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     syncView();
     return () => {
       idle.remove();
+      dragStart.remove();
       click.remove();
       searchCenterMarker.current?.setMap(null);
       searchCenterMarker.current = null;
@@ -216,6 +230,26 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   useEffect(() => {
     if (map) map.setMapTypeId(basemap === 'satellite' ? 'satellite' : 'roadmap');
   }, [basemap, map]);
+
+  // Ouverture : cadrer la carte sur TOUTES les parcelles chargées.
+  //
+  // Sans cela la carte s'ouvrait au centre par défaut au zoom 21 (~100 m de
+  // large) alors que les parcelles couvrent ~20 km : la quasi-totalité d'entre
+  // elles restait hors écran, ce qui donnait l'impression qu'elles manquaient.
+  // Le cadrage n'a lieu qu'une fois, dès que les parcelles sont disponibles, et
+  // jamais après un déplacement manuel de l'utilisateur.
+  useEffect(() => {
+    if (!map || fitAllDone.current || userMovedMap.current || !parcelsBounds) return;
+    fitAllDone.current = true;
+    const [[south, west], [north, east]] = parcelsBounds;
+    // Parcelles confondues : un fitBounds pousserait le zoom au maximum, illisible.
+    if (Math.abs(north - south) < 1e-6 && Math.abs(east - west) < 1e-6) {
+      map.setCenter({ lat: south, lng: west });
+      map.setZoom(DEFAULT_MAP_ZOOM);
+      return;
+    }
+    map.fitBounds(new google.maps.LatLngBounds({ lat: south, lng: west }, { lat: north, lng: east }), 40);
+  }, [map, parcelsBounds]);
 
   // Régions et couverture des communes.
   useEffect(() => {

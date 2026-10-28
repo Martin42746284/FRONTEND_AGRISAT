@@ -114,6 +114,21 @@ export interface AuditEntry {
 
 export interface LogLine { at: string; level: 'info' | 'warn' | 'error'; msg: string }
 
+/** Zone d'une analyse de terrain : emplacement et étendue de la capture. */
+export interface AnalysisZone {
+  center: LatLng;
+  /** Bornes géographiques de la capture ; absentes si la capture a échoué. */
+  bounds?: { south: number; west: number; north: number; east: number };
+  /** Largeur de la zone capturée, en mètres (0 si inconnue). */
+  spanM: number;
+  zoom: number;
+}
+
+/** Parcelle retenue par une analyse, telle qu'affichée dans l'historique. */
+export interface AnalysisParcel {
+  id: string; label: string; areaHa: number; center: LatLng;
+}
+
 export interface Analysis {
   id: string; zoneLabel: string; regionId?: string; communeId?: string; seasonId: string;
   status: AnalysisStatus; progress: number;
@@ -121,6 +136,12 @@ export interface Analysis {
   pipelineVersion: string; scenes: number;
   parcelCount?: number; areaHa?: number;
   warnings: string[]; logs: LogLine[]; cached?: boolean; error?: string;
+  /** Zone analysée : renseignée par les analyses de terrain (historique de capture). */
+  zone?: AnalysisZone;
+  /** Aperçu réduit de la capture d'écran analysée (data URL). */
+  captureDataUrl?: string;
+  /** Parcelles détectées et enregistrées par cette analyse. */
+  detected?: AnalysisParcel[];
 }
 
 export interface Filters {

@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Crosshair, Eraser, Home, Layers, PenTool, Search, Undo2, X, ScanSearch, Camera, Sparkles, Waypoints, Radar, Navigation, ThermometerSun } from 'lucide-react';
+import { Check, Crosshair, Eraser, Home, Layers, Loader2, PenTool, Search, Undo2, X, ScanSearch, Camera, Sparkles, Waypoints, Radar, Navigation, ThermometerSun } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { bboxOf, centroidOf, M_PER_DEG_LAT, mPerDegLng, ringAreaHa } from '../lib/geometry';
-import { normalize } from '../lib/format';
+import { normalize, withoutToolName } from '../lib/format';
 import { api, type AutomaticDetectionResult, type GeminiParcelsPayload, type GeminiParcelsResult } from '../api/services';
 import { maltoToFrontend, type MaltoParcel } from '../api/maltoAdapter';
 import { isAnalyzedParcel, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
 import { runBatchesWithRetry } from '../lib/detect-queue';
+import type { AnalysisParcel } from '../types';
 
 const NATIONAL: [[number, number], [number, number]] = [[-25.8, 43.0], [-11.8, 50.7]];
 
@@ -58,6 +59,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const mapBounds = useApp((s) => s.mapBounds);
   const mapSize = useApp((s) => s.mapSize);
   const setGeminiCapture = useApp((s) => s.setGeminiCapture);
+  const recordCaptureAnalysis = useApp((s) => s.recordCaptureAnalysis);
   const analyzeParcel = useApp((s) => s.analyzeParcel);
   const toast = useApp((s) => s.toast);
   const parcels = useApp((s) => s.parcels);
@@ -91,8 +93,12 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const [gddThreshold, setGddThreshold] = useState('2000');
   const [periodDays, setPeriodDays] = useState('130');
   const [autoSearchError, setAutoSearchError] = useState<string | null>(null);
+  /** Pourcentage d'avancement de la capture, `null` quand elle n'est pas en cours. */
+  const [captureProgress, setCaptureProgress] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const coordinateFromInput = useRef<[number, number] | null>(null);
+  const progressTimer = useRef<number | null>(null);
+  const progressDoneTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (!automaticSearchCenter) return;
@@ -113,12 +119,56 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     selectAutomaticParcel(null);
   }, [selectedId, filtersOpen, selectAutomaticParcel, setAutomaticSearchCenter, setAutomaticSearchRadius]);
 
+  const clearProgressTimers = () => {
+    if (progressTimer.current !== null) {
+      window.clearInterval(progressTimer.current);
+      progressTimer.current = null;
+    }
+    if (progressDoneTimer.current !== null) {
+      window.clearTimeout(progressDoneTimer.current);
+      progressDoneTimer.current = null;
+    }
+  };
+
   // Annulation au démontage (changement de page) : pas de mise à jour d'état après.
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => () => {
+    abortRef.current?.abort();
+    clearProgressTimers();
+  }, []);
+
+  /**
+   * Progression de la capture.
+   *
+   * Le serveur répond en un seul bloc, sans palier intermédiaire : le pourcentage
+   * est donc une estimation dans le temps, qui approche 95 % puis n'atteint
+   * 100 % qu'à la réception du résultat. La barre reste affichée un court instant
+   * à 100 % pour marquer la fin.
+   */
+  const startCaptureProgress = () => {
+    clearProgressTimers();
+    setCaptureProgress(0);
+    const startedAt = Date.now();
+    progressTimer.current = window.setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      setCaptureProgress(Math.min(95, Math.round(95 * (1 - Math.exp(-elapsed / 12_000)))));
+    }, 350);
+  };
+  const finishCaptureProgress = () => {
+    clearProgressTimers();
+    setCaptureProgress(100);
+    progressDoneTimer.current = window.setTimeout(() => {
+      setCaptureProgress(null);
+      progressDoneTimer.current = null;
+    }, 900);
+  };
+  const abortCaptureProgress = () => {
+    clearProgressTimers();
+    setCaptureProgress(null);
+  };
 
   /**
    * Capture satellite de la zone de terrain visible à l'écran, détection de
-   * toutes les parcelles par Gemini puis enregistrement en base.
+   * toutes les parcelles puis enregistrement en base.
    */
   const captureTerrain = async (center?: [number, number]) => {
     if (geminiPending) return;
@@ -127,9 +177,10 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     abortRef.current = ctrl;
     setGeminiPending(true);
     setGeminiError(null);
+    startCaptureProgress();
+    const targetCenter = center || mapCenter;
     try {
       const isCustomCenter = Array.isArray(center) && (center[0] !== mapCenter[0] || center[1] !== mapCenter[1]);
-      const targetCenter = center || mapCenter;
 
       const payload: GeminiParcelsPayload = {
         latitude: targetCenter[0],
@@ -166,19 +217,48 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
       }
 
       const duplicates = result.existing.length;
+      // Historique de la page « Analyses » : capture, parcelles détectées et zone.
+      const labels = new Map((result.parcels as MaltoParcel[]).map((row) => [row.id, row.label ?? null]));
+      const detectedParcels: AnalysisParcel[] = detected.map((parcel) => ({
+        id: parcel.id,
+        label: labels.get(parcel.id) ?? `Parcelle ${parcel.id.slice(0, 8)}`,
+        areaHa: parcel.areaHa,
+        center: parcel.centroid,
+      }));
+      void recordCaptureAnalysis({
+        center: targetCenter,
+        bounds: { south: bounds.south, west: bounds.west, north: bounds.north, east: bounds.east },
+        spanM: result.capture.span_m,
+        zoom: result.capture.zoom,
+        imageDataUrl: result.capture.image_data_url,
+        parcels: detectedParcels,
+        duplicates,
+        warnings: result.warnings,
+      });
+      finishCaptureProgress();
       toast(
         result.parcels.length === 0
           ? duplicates
-            ? `Gemini : ${duplicates} parcelle(s) déjà présente(s) en base, aucune ajoutée.`
-            : 'Gemini n’a détecté aucune parcelle sur cette capture.'
+            ? `Détection : ${duplicates} parcelle(s) déjà présente(s) en base, aucune ajoutée.`
+            : 'Aucune parcelle détectée sur cette capture.'
           : `${added} nouvelle(s) parcelle(s) enregistrée(s)`
             + (duplicates ? ` — ${duplicates} déjà en base (non dupliquée(s)).` : '.'),
         result.parcels.length ? 'ok' : duplicates ? 'info' : 'warn',
       );
     } catch (error) {
       if (!ctrl.signal.aborted) {
-        setGeminiError(error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        setGeminiError(message);
+        // Une capture en échec est consignée elle aussi : l'historique reste fidèle.
+        void recordCaptureAnalysis({
+          center: targetCenter,
+          spanM: 0,
+          zoom: mapZoom,
+          parcels: [],
+          error: message,
+        });
       }
+      abortCaptureProgress();
     } finally {
       if (!ctrl.signal.aborted) setGeminiPending(false);
     }
@@ -527,7 +607,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
           <button className={`tool ${basemap === 'satellite' ? 'tool--on' : ''}`} data-tip={basemap === 'plan' ? 'Fond satellite' : 'Fond plan'} aria-label="Basculer plan / satellite" onClick={() => setBasemap(basemap === 'plan' ? 'satellite' : 'plan')}><Layers size={18} /></button>
           <button className={`tool ${showCoverage ? 'tool--on' : ''}`} data-tip="Couverture des analyses" aria-label="Afficher la couverture des analyses" onClick={() => setShowCoverage(!showCoverage)}><Crosshair size={18} /></button>
           <button className={`tool ${autoSearchOpen ? 'tool--on' : ''}`} data-tip="Recherche automatique orge / non-orge" aria-label="Ouvrir l’analyse automatique des cultures" aria-expanded={autoSearchOpen} onClick={toggleAutoSearch}><Radar size={18} /></button>
-          <button className={`tool ${geminiOpen ? 'tool--on' : ''}`} data-tip="Capturer le terrain et détecter les parcelles (Gemini)" aria-label="Capturer le terrain et détecter les parcelles avec Gemini" aria-expanded={geminiOpen} onClick={toggleGemini}><Sparkles size={18} /></button>
+          <button className={`tool ${geminiOpen ? 'tool--on' : ''}`} data-tip="Capturer le terrain et détecter les parcelles" aria-label="Capturer le terrain et détecter les parcelles" aria-expanded={geminiOpen} onClick={toggleGemini}><Sparkles size={18} /></button>
           {!drawing && !zone && <button className="tool" data-tip="Dessiner une zone d’étude" aria-label="Dessiner une zone d’étude" onClick={startDraw}><PenTool size={18} /></button>}
           {!drawing && <button className="tool" data-tip="Tracer une parcelle manuellement" aria-label="Tracer une parcelle manuellement" onClick={startParcelDraw}><Waypoints size={18} /></button>}
         </div>
@@ -609,13 +689,13 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         )}
 
         {geminiOpen && (
-          <section className="autosearch gemini" aria-label="Détection de parcelles par Gemini">
+          <section className="autosearch gemini" aria-label="Détection de parcelles sur capture satellite">
             <header className="autosearch__head">
-              <b><Sparkles size={16} /> Détection Gemini</b>
-              <button className="icon-btn" onClick={closeGemini} aria-label="Fermer la détection Gemini"><X size={17} /></button>
+              <b><Sparkles size={16} /> Détection de parcelles</b>
+              <button className="icon-btn" onClick={closeGemini} aria-label="Fermer la détection de parcelles"><X size={17} /></button>
             </header>
             <p className="hint">
-              Capture satellite de toute la zone de terrain visible à l’écran, analysée par Gemini.
+              Capture satellite de toute la zone de terrain visible à l’écran, analysée automatiquement.
               Toutes les parcelles visibles sont délimitées et tracées sur la carte ; celles déjà en base ne sont pas dupliquées.
             </p>
             <dl className="gemini__view">
@@ -625,18 +705,35 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
                 <div><dt>Écran</dt><dd>{Math.round(mapSize.width)} × {Math.round(mapSize.height)} px</dd></div>
               )}
             </dl>
-            {geminiError && <p className="note note--danger">{geminiError}</p>}
+            {geminiError && <p className="note note--danger">{withoutToolName(geminiError)}</p>}
             <button className="btn btn--primary gemini__capture" onClick={() => void captureTerrain()} disabled={geminiPending}>
               <Camera size={15} /> {geminiPending ? 'Capture et détection…' : 'Capturer le terrain'}
             </button>
+            {captureProgress !== null && (
+              <div
+                className="capture-progress"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={captureProgress}
+                aria-label="Avancement de l’analyse de la capture"
+              >
+                <div className="capture-progress__head">
+                  <Loader2 size={14} className="capture-progress__spin" aria-hidden />
+                  <span>{captureProgress >= 100 ? 'Analyse terminée' : 'Analyse de l’image satellite…'}</span>
+                  <b>{captureProgress} %</b>
+                </div>
+                <div className="capture-progress__track"><i style={{ width: `${captureProgress}%` }} /></div>
+              </div>
+            )}
             {geminiPending && (
-              <span className="hint">Capture de l’image satellite puis analyse Gemini — quelques secondes à une minute…</span>
+              <span className="hint">Capture de l’image satellite puis analyse — quelques secondes à une minute…</span>
             )}
             {geminiResult && (
               <img
                 className="gemini__preview"
                 src={geminiResult.capture.image_data_url}
-                alt="Capture satellite analysée par Gemini"
+                alt="Capture satellite analysée"
               />
             )}
             {geminiResult && (
@@ -646,7 +743,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
                   {geminiResult.summary.duplicates ? ` · ${geminiResult.summary.duplicates} déjà en base` : ''}
                 </b>
                 {geminiResult.warnings.map((warning) => (
-                  <p className="note note--warn" key={warning}>{warning}</p>
+                  <p className="note note--warn" key={warning}>{withoutToolName(warning)}</p>
                 ))}
                 {geminiResult.parcels.length > 0 && (
                   <>
@@ -663,7 +760,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
                     {geminiResult.parcels.map((row, index) => {
                       const parcel = useApp.getState().parcels.find((candidate) => candidate.id === row.id);
                       const analyzed = !!parcel && isAnalyzedParcel(parcel);
-                      const label = row.label?.trim() || `Parcelle Gemini ${index + 1}`;
+                      const label = row.label?.trim() ? withoutToolName(row.label.trim()) : `Parcelle ${index + 1}`;
                       return (
                         <div className={`gemini__row ${selectedId === row.id ? 'is-selected' : ''}`} key={row.id}>
                           <button
@@ -706,7 +803,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
                     <ul>
                       {geminiResult.existing.map((item) => (
                         <li key={item.id}>
-                          {item.label || item.id}
+                          {item.label ? withoutToolName(item.label) : item.id}
                           {item.surface_ha != null ? ` · ${item.surface_ha.toFixed(2)} ha` : ''}
                         </li>
                       ))}
@@ -794,11 +891,13 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
             <button className="btn btn--sm" onClick={startDraw}><PenTool size={13} /> Redessiner</button>
             {canLaunch && <button className="btn btn--sm btn--primary" onClick={() => onAnalyze && onAnalyze()}><ScanSearch size={13} /> Analyser</button>}
             <button className="btn btn--sm" onClick={() => { setGeminiOpen(true); void captureTerrain(centroidOf(zone)); }} disabled={geminiPending}
-              title="Capturer la zone et détecter les parcelles avec Gemini (~100 m autour du centre de la zone, tuiles de 20 m)">
+              title="Capturer la zone et détecter les parcelles (~100 m autour du centre de la zone, tuiles de 20 m)">
               <Camera size={13} /> {geminiPending ? 'Capture en cours…' : 'Capturer le terrain'}
             </button>
             <button className="btn btn--sm" onClick={() => setZone(null)}><Eraser size={13} /> Supprimer</button>
-            {geminiPending && <span className="hint">Capture satellite et détection Gemini en cours…</span>}
+            {geminiPending && captureProgress !== null && (
+              <span className="hint">Capture satellite et détection des parcelles en cours — {captureProgress} %</span>
+            )}
           </div>
         )}
         {manualParcelDraft && (

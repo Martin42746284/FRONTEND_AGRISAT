@@ -1,14 +1,15 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type {
-  Analysis, AuditEntry, Commune, CropResult, CultureId, Filters, LatLng, Parcel, Region, Role, User,
+  Analysis, AnalysisParcel, AuditEntry, Commune, CropResult, CultureId, Filters, LatLng, Parcel, Region, Role, User,
 } from '../types';
 import { AREA_MAX, DEFAULT_COLORS, DEFAULT_SEASON, PIPELINE_STEPS, CURRENT_MODEL, ROLES } from '../data/constants';
 import { api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectionResult, type ParcelUpdate, type AuditEntryCreate } from '../api/services';
 import { maltoToFrontend, maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
 import { centroidOf, isDuplicateVhrParcel, pointInPolygon, ringAreaHa } from '../lib/geometry';
-import { analyzedParcelIds, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
+import { analyzedParcelIds, parcelIdsOfAnalysis, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
 import { correctionText, withCorrectedClass } from '../lib/culture-sync';
+import { captureThumbnail } from '../lib/capture-image';
 import {
   isExplicitParcel, isManualParcel, REJECTED_PARCEL_SOURCE,
 } from '../lib/parcel-sources';
@@ -40,6 +41,28 @@ export interface GeminiCaptureArea {
   east: number;
   spanM: number;
   zoom: number;
+}
+
+/** Nombre maximal de captures conservées dans l'historique local (page « Analyses »). */
+export const MAX_CAPTURE_HISTORY = 40;
+
+/** Données d'une analyse de terrain à consigner dans l'historique. */
+export interface CaptureAnalysisInput {
+  /** Centre de la zone capturée. */
+  center: LatLng;
+  /** Bornes de la capture (absentes si la requête a échoué). */
+  bounds?: { south: number; west: number; north: number; east: number };
+  spanM: number;
+  zoom: number;
+  /** Image de la capture (data URL) : réduite avant stockage. */
+  imageDataUrl?: string | null;
+  /** Parcelles détectées, avec libellé et emprise. */
+  parcels: AnalysisParcel[];
+  /** Parcelles déjà en base, non dupliquées. */
+  duplicates?: number;
+  warnings?: string[];
+  /** Message d'erreur : l'analyse est consignée en échec. */
+  error?: string;
 }
 
 /** Résumé du dernier traçage automatique (contours IA — à présenter comme indicatifs). */
@@ -90,6 +113,20 @@ interface State {
    * Les identifiants déjà affichés sont ignorés : pas de doublon visuel.
    */
   addDetectedParcels: (added: Parcel[]) => number;
+  /**
+   * Historique des analyses de terrain (captures), conservé dans le navigateur :
+   * il reste disponible après un rechargement de la page ou un redémarrage.
+   */
+  captureHistory: Analysis[];
+  /** Consigne une capture de terrain dans la page « Analyses ». */
+  recordCaptureAnalysis: (input: CaptureAnalysisInput) => Promise<void>;
+  /**
+   * Retire une analyse de l'historique et supprime les parcelles qu'elle a créées.
+   * Les parcelles des autres analyses ne sont jamais touchées ; l'analyse n'est
+   * retirée que si toutes ses parcelles ont bien été supprimées de la base.
+   * Renvoie `false` (et conserve l'entrée) en cas d'échec serveur.
+   */
+  deleteAnalysisHistory: (id: string) => Promise<boolean>;
 
   drawing: boolean; drawMode: 'zone' | 'parcel'; draft: LatLng[]; zone: LatLng[] | null; manualParcelDraft: LatLng[] | null;
   toasts: Toast[];
@@ -171,6 +208,7 @@ export const useApp = create<State>()(
       ready: false,
       loadError: null,
       parcels: [], regions: [], communes: [], analyses: [], users: [], audit: [],
+      captureHistory: [],
       user: null,
       colors: { ...DEFAULT_COLORS },
       colorsByUser: {},
@@ -248,7 +286,10 @@ export const useApp = create<State>()(
           // automatique retiré ne réapparaît pas. Les délimitations explicites
           // (tracé manuel, import KML, détection Gemini) sont conservées telles quelles.
           parcels: db.parcels.filter((p) => isExplicitParcel(p) || !isRejectedParcel(p, rejectedParcels)),
-          regions: db.regions, communes: db.communes, analyses: db.analyses,
+          regions: db.regions, communes: db.communes,
+          // L'historique des captures est local : sans cette fusion, le rechargement
+          // (qui remplace les analyses par celles de la base) l'effacerait.
+          analyses: mergeCaptureHistory(db.analyses, get().captureHistory),
           users: db.users, audit,
           rejectedParcels,
           ready: true,
@@ -769,6 +810,124 @@ export const useApp = create<State>()(
         return base;
       },
 
+      recordCaptureAnalysis: async ({
+        center, bounds, spanM, zoom, imageDataUrl, parcels, duplicates = 0, warnings = [], error,
+      }) => {
+        const s = get();
+        const now = new Date().toISOString();
+        // Aperçu réduit : la capture complète dépasserait le quota de stockage local.
+        const thumbnail = imageDataUrl ? await captureThumbnail(imageDataUrl) : null;
+        // Numérotation lisible, sans réutilisation d'un identifiant déjà pris
+        // (l'historique est troniqué, donc sa longueur ne suffit pas).
+        const day = now.slice(0, 10).replace(/-/g, '');
+        let index = s.captureHistory.length + 1;
+        let id = `CAP-${day}-${String(index).padStart(3, '0')}`;
+        while (s.captureHistory.some((a) => a.id === id) || s.analyses.some((a) => a.id === id)) {
+          index += 1;
+          id = `CAP-${day}-${String(index).padStart(3, '0')}`;
+        }
+        const entry: Analysis = {
+          id,
+          zoneLabel: `Capture ${Math.round(spanM)} m · ${center[0].toFixed(5)}, ${center[1].toFixed(5)}`,
+          seasonId: s.filters.seasonId,
+          status: error ? 'echec' : parcels.length ? 'terminee' : 'terminee_avertissements',
+          progress: 100,
+          createdBy: s.user?.name ?? '—',
+          createdAt: now, startedAt: now, finishedAt: now,
+          pipelineVersion: 'Détection automatique · capture satellite',
+          scenes: 0,
+          parcelCount: parcels.length,
+          areaHa: parcels.reduce((total, parcel) => total + parcel.areaHa, 0),
+          warnings: error
+            ? []
+            : [...warnings, ...(parcels.length || duplicates
+              ? []
+              : ['Aucune parcelle entièrement visible détectée sur cette capture.'])],
+          logs: [{
+            at: now,
+            level: error ? 'error' : parcels.length ? 'info' : 'warn',
+            msg: error
+              ? `Capture interrompue : ${error}`
+              : `Capture de ${Math.round(spanM)} m (zoom ${zoom}) — ${parcels.length} parcelle(s) détectée(s)`
+                + (duplicates ? `, ${duplicates} déjà en base.` : '.'),
+          }],
+          error,
+          zone: { center, bounds, spanM, zoom },
+          captureDataUrl: thumbnail ?? undefined,
+          detected: parcels,
+        };
+        set((st) => ({
+          analyses: [entry, ...st.analyses.filter((a) => a.id !== entry.id)],
+          captureHistory: [entry, ...st.captureHistory].slice(0, MAX_CAPTURE_HISTORY),
+        }));
+        if (!error) get().logAudit('Analyse de zone', entry.zoneLabel);
+      },
+
+      deleteAnalysisHistory: async (id) => {
+        const s = get();
+        const entry = s.analyses.find((a) => a.id === id) ?? s.captureHistory.find((a) => a.id === id);
+        if (!entry) return false;
+
+        // Parcelles que cette analyse a créées : ce sont les seules lignes de la
+        // base qui peuvent disparaître avec elle.
+        const candidateIds = parcelIdsOfAnalysis([...s.analyses, ...s.captureHistory], id)
+          .filter((parcelId) => isDatabaseParcelId(parcelId));
+
+        // Suppression par petits lots : une capture peut produire des dizaines de
+        // parcelles et le pool de connexions du backend est limité.
+        const results: PromiseSettledResult<void>[] = [];
+        for (let i = 0; i < candidateIds.length; i += 6) {
+          results.push(...await Promise.allSettled(
+            candidateIds.slice(i, i + 6).map((parcelId) => api.deleteParcel(parcelId)),
+          ));
+        }
+        // Un 404 ne signale pas une panne : la ligne n'existe déjà plus (parcelle
+        // supprimée entre-temps, autre navigateur), la parcelle est donc bien partie.
+        const stillStored = (result: PromiseSettledResult<void>) => result.status === 'rejected'
+          && !/Malto 404/.test(String((result.reason as Error)?.message ?? result.reason));
+        for (const result of results) {
+          if (result.status === 'rejected' && stillStored(result)) {
+            console.warn('[AgriSat] Suppression d’une parcelle de l’analyse impossible :', result.reason);
+          }
+        }
+        const failed = results.filter(stillStored).length;
+
+        // Les parcelles déjà retirées le sont quand même : un nouvel essai ne
+        // tentera que les suppressions en échec, sans toucher aux autres analyses.
+        const removedIds = new Set(candidateIds.filter((_, i) => !stillStored(results[i])));
+        if (removedIds.size) {
+          set((st) => ({
+            parcels: st.parcels.filter((p) => !removedIds.has(p.id)),
+            selectedId: st.selectedId && removedIds.has(st.selectedId) ? null : st.selectedId,
+            ...(st.editingParcelId && removedIds.has(st.editingParcelId)
+              ? { editingParcelId: null, editingCoords: null }
+              : {}),
+          }));
+        }
+
+        if (failed) {
+          get().toast(
+            `Analyse conservée : ${failed} parcelle(s) sur ${candidateIds.length} n’ont pas pu être supprimées de la base.`,
+            'danger',
+          );
+          return false;
+        }
+
+        const parcelCount = candidateIds.length;
+        set((st) => ({
+          analyses: st.analyses.filter((a) => a.id !== id),
+          captureHistory: st.captureHistory.filter((a) => a.id !== id),
+        }));
+        get().toast(
+          parcelCount
+            ? `Analyse ${id} supprimée · ${parcelCount} parcelle(s) supprimée(s).`
+            : `Analyse ${id} supprimée.`,
+          'ok',
+        );
+        get().logAudit('Suppression d’analyse', `${id}${parcelCount ? ` · ${parcelCount} parcelle(s)` : ''}`);
+        return true;
+      },
+
       relaunchAnalysis: (id) => {
         const s = get();
         const a = s.analyses.find((x) => x.id === id);
@@ -794,19 +953,34 @@ export const useApp = create<State>()(
     }),
     {
       name: 'agri-mada-v1',
-      version: 3,
+      version: 4,
       migrate: (persistedState) => ({
         ...(persistedState as Pick<State, 'user' | 'colors' | 'colorsByUser' | 'threshold' | 'showCoverage'>),
         rejectedParcels: (persistedState as Partial<State>).rejectedParcels ?? [],
+        captureHistory: (persistedState as Partial<State>).captureHistory ?? [],
         basemap: 'satellite' as const,
       }),
       partialize: (s) => ({
         user: s.user, colors: s.colors, colorsByUser: s.colorsByUser, threshold: s.threshold,
         basemap: s.basemap, showCoverage: s.showCoverage, rejectedParcels: s.rejectedParcels,
+        captureHistory: s.captureHistory,
       }),
     },
   ),
 );
+
+/**
+ * Analyses de la base + historique local des captures, sans doublon.
+ *
+ * `reload` remplace les analyses par celles du serveur ; comme l'historique des
+ * captures n'existe que dans le navigateur, il est réinjecté ici pour rester
+ * visible après un rechargement de la page.
+ */
+function mergeCaptureHistory(fromDb: Analysis[], history: Analysis[]): Analysis[] {
+  const known = new Set(fromDb.map((a) => a.id));
+  return [...history.filter((a) => !known.has(a.id)), ...fromDb]
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
 
 /**
  * Résultat « non classé » d'une parcelle dont la culture vient d'être supprimée.

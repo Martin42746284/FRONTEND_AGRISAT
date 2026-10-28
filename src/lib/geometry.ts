@@ -104,6 +104,26 @@ export function bboxOf(coords: LatLng[]): [LatLng, LatLng] {
   return [[minLa, minLo], [maxLa, maxLo]];
 }
 
+/**
+ * Boîte englobante de plusieurs anneaux [lat,lng] — `null` si aucun sommet
+ * exploitable. Sert au cadrage initial de la carte sur toutes les parcelles.
+ */
+export function bboxOfAll(rings: LatLng[][]): [LatLng, LatLng] | null {
+  let box: [LatLng, LatLng] | null = null;
+  for (const ring of rings) {
+    if (!ring.length) continue;
+    const [[minLa, minLo], [maxLa, maxLo]] = bboxOf(ring);
+    if (![minLa, minLo, maxLa, maxLo].every(Number.isFinite)) continue;
+    box = box
+      ? [
+        [Math.min(box[0][0], minLa), Math.min(box[0][1], minLo)],
+        [Math.max(box[1][0], maxLa), Math.max(box[1][1], maxLo)],
+      ]
+      : [[minLa, minLo], [maxLa, maxLo]];
+  }
+  return box;
+}
+
 /** Enveloppe convexe (monotone chain) sur des points [lat,lng]. */
 export function convexHull(points: LatLng[]): LatLng[] {
   const p = points.map(([la, lo]) => [lo, la] as [number, number]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);

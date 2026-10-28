@@ -132,6 +132,15 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .an-head { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
 .steps { list-style: none; padding: 0; margin: 0 0 14px; display: grid; gap: 6px; } .steps li { display: flex; gap: 8px; align-items: center; color: var(--ink-3); } .steps li.is-done { color: var(--ink); } .steps li.is-done svg { color: var(--ok); } .steps li.is-active { color: var(--info); font-weight: 600; } .steps li.is-failed { color: var(--danger); font-weight: 600; }
 .logs { background: #101E22; color: #C9D6D4; border-radius: 6px; padding: 10px 12px; max-height: 190px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; display: grid; gap: 3px; } .log time { color: #6F8A91; margin-right: 8px; } .log--warn { color: #F2C66B; } .log--error { color: #F59A91; }
+/* Historique des analyses de terrain : aperçu de la capture et parcelles détectées. */
+.an-id { display: flex; align-items: center; gap: 8px; }
+.an-thumb { width: 54px; height: 34px; flex: none; object-fit: cover; border: 1px solid var(--line-2); border-radius: 5px; background: #0E1B1F; }
+.an-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.an-capture { display: block; width: 100%; margin: 4px 0 12px; border: 1px solid var(--line-2); border-radius: 8px; }
+.an-parcels { list-style: none; display: grid; gap: 4px; margin: 0 0 14px; padding: 0; }
+.an-parcels li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px; border: 1px solid var(--line-2); border-radius: 7px; }
+.an-parcels li > span { display: grid; min-width: 0; }
+.an-parcels small { color: var(--ink-3); font-size: 11px; }
 
 /* ---------- Modale, toasts ---------- */
 .modal-backdrop { position: fixed; inset: 0; z-index: 2000; background: rgba(10,25,28,.5); display: grid; place-items: center; padding: 16px; }
@@ -414,6 +423,19 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .gemini__existing { font-size: 11.5px; color: var(--ink-3); }
 .gemini__existing summary { cursor: pointer; }
 .gemini__existing ul { margin: 4px 0 0; padding-left: 18px; }
+/* Avancement de la capture satellite : animation + pourcentage. */
+.capture-progress { display: grid; gap: 5px; margin: 7px 0 3px; }
+.capture-progress__head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-2); }
+.capture-progress__head span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.capture-progress__head b { color: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; }
+.capture-progress__spin { flex: none; color: var(--accent); animation: capture-spin .9s linear infinite; }
+.capture-progress__track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--line-2); }
+.capture-progress__track > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .35s ease-out; }
+@keyframes capture-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .capture-progress__spin { animation-duration: 2.4s; }
+  .capture-progress__track > i { transition: none; }
+}
 .automatic-parcel-drawer { position: absolute; top: 0; right: calc(100% + 8px); width: min(380px, calc(100vw - 32px)); max-height: min(78vh, 760px); display: flex; flex-direction: column; overflow: hidden; color: var(--ink); }
 .automatic-parcel-drawer__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .automatic-parcel-drawer__head h2 { margin: 0; overflow-wrap: anywhere; }

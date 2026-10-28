@@ -1,7 +1,30 @@
-import type { LatLng, Parcel } from '../types';
+import type { Analysis, LatLng, Parcel } from '../types';
 import { M_PER_DEG_LAT, mPerDegLng, pointInPolygon } from './geometry';
 import { isExplicitParcel } from './parcel-sources';
 import { isDatabaseParcelId, isRejectedParcel, type RejectedParcel } from './rejections';
+
+/**
+ * Parcelles qu'une analyse a réellement créées — et qu'aucune autre ne cite.
+ *
+ * L'historique liste les parcelles enregistrées par chaque analyse. Une même
+ * parcelle ne doit être supprimée qu'une fois : si deux entrées la citent (ancien
+ * historique tronqué, capture relancée sur la même zone), elle reste attachée à
+ * l'analyse qu'on garde. Les identifiants sont renvoyés dédoublonnés.
+ */
+export function parcelIdsOfAnalysis(
+  analyses: Array<Pick<Analysis, 'id' | 'detected'>>,
+  id: string,
+): string[] {
+  const target = analyses.find((analysis) => analysis.id === id);
+  if (!target) return [];
+  const claimedElsewhere = new Set(
+    analyses
+      .filter((analysis) => analysis.id !== id)
+      .flatMap((analysis) => (analysis.detected ?? []).map((parcel) => parcel.id)),
+  );
+  return [...new Set((target.detected ?? []).map((parcel) => parcel.id))]
+    .filter((parcelId) => !claimedElsewhere.has(parcelId));
+}
 
 /** Plafond du backend pour `traced_parcels` (MAX_TRACED_PARCELS). */
 export const MAX_ANALYSIS_PARCELS = 500;

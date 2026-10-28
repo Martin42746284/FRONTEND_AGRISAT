@@ -143,7 +143,7 @@ function mapConfidence(p: MaltoParcel): number {
   else if (conf > 1) conf /= 100; // % → probabilité
     // Si c'est détecté comme « Non-orge », inverser : confidence est la probabilité de non-orge,
     // donc la probabilité d'orge est 1 - conf
-    if (isNonOrge(p)) {
+    if (isNonOrge(p) || (p.verdict ?? '').toLowerCase().includes('non-orge')) {
       conf = 1 - conf;
     }
     return Math.min(0.99, Math.max(0.05, conf));
@@ -239,6 +239,7 @@ export function maltoToFrontend(parcels: MaltoParcel[], zones?: MaltoZoneInfo): 
 
       const season = mapSeason(p.saison);
       const detected = (p.culture_detected ?? '').trim();
+      const verdict = (p.verdict ?? '').toLowerCase();
       // La classe enregistrée fait foi : libellé (« Orge », « Riz ») ou identifiant
       // (`sol_nu`, `pomme_de_terre`). Le classifieur binaire orge/non-orge ne sert
       // que lorsque la valeur stockée n'est pas une culture (« Non-orge »).
@@ -246,7 +247,9 @@ export function maltoToFrontend(parcels: MaltoParcel[], zones?: MaltoZoneInfo): 
         knownCulture(detected)
         ?? (detected
           ? (isNonOrge(p) ? 'autre' : 'orge')
-          : (knownCulture(p.culture_declared) ?? (p.culture_declared?.trim() ? 'autre' : 'inconnue')));
+          : verdict.includes('non-orge') || verdict.includes('non orge')
+            ? 'autre'
+            : (knownCulture(p.culture_declared) ?? (p.culture_declared?.trim() ? 'autre' : 'inconnue')));
       const conf = mapConfidence(p);
       const processedAt = p.created_at || new Date().toISOString();
 

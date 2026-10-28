@@ -16,3 +16,24 @@ export function fmtDate(iso: string | null | undefined, withTime = false): strin
 }
 
 export const normalize = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+/**
+ * Texte destiné à l'écran, sans mention du moteur d'analyse employé.
+ *
+ * Les libellés enregistrés en base (« Détection Gemini », « Parcelle Gemini
+ * 012 », verdicts, notes, messages d'erreur) nomment l'outil : l'interface les
+ * reformule de façon neutre avant affichage, sans toucher aux données stockées.
+ */
+export function withoutToolName(text: string): string {
+  return text
+    // « modèle image Gemini » et identifiants de modèle (« gemini-2.5-flash »).
+    .replace(/\bmodèle image \w*gemini[\w-]*(?:\.[\w-]+)*/gi, 'modèle d’analyse d’images')
+    .replace(/\bDétection Gemini\b/g, 'Détection automatique')
+    .replace(/\bpar Gemini\b/g, 'automatiquement')
+    .replace(/\bParcelle Gemini\b/g, 'Parcelle')
+    .replace(/\bLibellé Gemini\b/g, 'Libellé d’origine')
+    .replace(/\bune clé Gemini\b/g, 'une clé API')
+    .replace(/\bclé Gemini\b/g, 'clé API')
+    .replace(/^Gemini\b/, 'Le service d’analyse')
+    .replace(/\bGemini\b/g, 'le service d’analyse');
+}

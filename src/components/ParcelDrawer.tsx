@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { CULTURES, CULTURE_BY_ID, ROLES, SEASONS, SEASON_BY_ID } from '../data/constants';
-import { fmtDate, fmtHa, fmtPct } from '../lib/format';
+import { fmtDate, fmtHa, fmtPct, withoutToolName } from '../lib/format';
 import { isUncertain } from '../lib/filter';
 import { ringAreaHa } from '../lib/geometry';
 import { isAnalyzedParcel } from '../lib/analysis-parcels';
@@ -101,10 +101,10 @@ export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors
           {detail.confidence != null && <><dt>Confiance du modèle</dt><dd>{fmtScore(detail.confidence)}</dd></>}
           {detail.declared && <><dt>Culture déclarée</dt><dd>{detail.declared}</dd></>}
           {detail.seasonLabel && <><dt>Saison / stade</dt><dd>{detail.seasonLabel}</dd></>}
-          {detail.source && <><dt>Source</dt><dd>{detail.source}</dd></>}
+          {detail.source && <><dt>Source</dt><dd>{withoutToolName(detail.source)}</dd></>}
         </dl>
-        {detail.verdict && <p className="culture-verdict">{detail.verdict}</p>}
-        {detail.details && <p className="hint">{detail.details}</p>}
+        {detail.verdict && <p className="culture-verdict">{withoutToolName(detail.verdict)}</p>}
+        {detail.details && <p className="hint">{withoutToolName(detail.details)}</p>}
       </section>
 
       {(detail.ndvi != null || detail.ndre != null || detail.evi != null || detail.savi != null || detail.ndwi != null) && (
@@ -180,7 +180,7 @@ export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors
           <dl className="kv kv--wide">
             {detail.ownerName && <><dt>Propriétaire / exploitant</dt><dd>{detail.ownerName}</dd></>}
             {detail.createdAt && <><dt>Enregistrée le</dt><dd>{fmtDate(detail.createdAt, true)}</dd></>}
-            {detail.notes && <><dt>Notes</dt><dd>{detail.notes}</dd></>}
+            {detail.notes && <><dt>Notes</dt><dd>{withoutToolName(detail.notes)}</dd></>}
           </dl>
         </section>
       )}
@@ -312,7 +312,7 @@ const launchAllowed = canLaunch !== false;
             {commune && <><dt>Commune</dt><dd>{commune.name}</dd></>}
             {region && <><dt>Région</dt><dd>{region.name}</dd></>}
             <dt>Détection du contour</dt><dd>{fmtPct(p.detectionConfidence)}</dd>
-            {p.dataSource && <><dt>Source de la donnée</dt><dd>{p.dataSource}</dd></>}
+            {p.dataSource && <><dt>Source de la donnée</dt><dd>{withoutToolName(p.dataSource)}</dd></>}
             <dt>Créée le</dt><dd>{fmtDate(p.createdAt, true)}</dd>
           </dl>
 
