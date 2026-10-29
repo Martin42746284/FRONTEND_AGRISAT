@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Satellite, Sparkles } from 'lucide-react';
+import { Check, Satellite, Sparkles, X } from 'lucide-react';
 
 export interface CaptureProgressView {
   /** Pourcentage réel transmis par le backend. */
@@ -20,7 +20,13 @@ export interface CaptureProgressView {
  * inerte (souris et clavier) pendant le traitement, tandis que la carte reste
  * visible derrière un voile flouté.
  */
-export default function CaptureProgressOverlay({ progress }: { progress: CaptureProgressView }) {
+export default function CaptureProgressOverlay({
+  progress,
+  onCancel,
+}: {
+  progress: CaptureProgressView;
+  onCancel?: () => void;
+}) {
   const cardRef = useRef<HTMLDivElement>(null);
   const percent = Math.max(0, Math.min(100, Math.round(progress.percent)));
 
@@ -39,6 +45,19 @@ export default function CaptureProgressOverlay({ progress }: { progress: Capture
       previousFocus?.focus();
     };
   }, []);
+
+  // Échap annule aussi l'analyse : le bouton reste le moyen visible, mais le
+  // clavier doit permettre de sortir d'une fenêtre bloquante.
+  useEffect(() => {
+    if (progress.done || !onCancel) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onCancel();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [progress.done, onCancel]);
 
   return createPortal(
     <div
@@ -99,8 +118,16 @@ export default function CaptureProgressOverlay({ progress }: { progress: Capture
         <p className="capture-overlay__hint">
           {progress.done
             ? 'Fermeture automatique…'
-            : 'Merci de patienter, cette fenêtre se fermera automatiquement.'}
+            : onCancel
+              ? 'Vous pouvez annuler à tout moment ; la fenêtre se fermera automatiquement à la fin.'
+              : 'Merci de patienter, cette fenêtre se fermera automatiquement.'}
         </p>
+
+        {!progress.done && onCancel && (
+          <button type="button" className="btn btn--sm capture-overlay__cancel" onClick={onCancel}>
+            <X size={14} /> Annuler l’analyse
+          </button>
+        )}
       </div>
     </div>,
     document.body,

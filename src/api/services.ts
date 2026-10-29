@@ -442,10 +442,11 @@ export const api = {
    * déjà analysée conserve ses données (le serveur répond 409) sauf si
    * `force` est demandé (relance explicite de l'utilisateur).
    */
-  async analyzeParcel(payload: AnalyzeParcelPayload): Promise<AnalyzeParcelResult> {
+  async analyzeParcel(payload: AnalyzeParcelPayload, signal?: AbortSignal): Promise<AnalyzeParcelResult> {
     return request<AnalyzeParcelResult>('/api/parcelles/analyze', {
       method: 'POST',
       body: JSON.stringify(payload),
+      signal: signal ?? null,
     }, ANALYZE_PARCEL_TIMEOUT_MS);
   },
 

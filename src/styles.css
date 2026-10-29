@@ -442,7 +442,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .gemini__view > div { display: flex; justify-content: space-between; gap: 10px; }
 .gemini__view dt { color: var(--ink-3); font-size: 11.5px; }
 .gemini__view dd { margin: 0; font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.gemini__capture, .gemini__analyze-all { width: 100%; justify-content: center; }
+.gemini__capture, .gemini__analyze-all, .gemini__cancel-batch { width: 100%; justify-content: center; }
 .gemini__preview { display: block; width: 100%; margin: 6px 0; border: 1px solid var(--line-2); border-radius: 8px; }
 .gemini__results { gap: 6px; }
 .gemini__row { display: flex; align-items: stretch; gap: 4px; }
@@ -595,6 +595,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .capture-overlay__hint {
   margin: 0; color: var(--ink-3); font-size: 11.5px;
 }
+.capture-overlay__cancel {
+  margin-top: 1px; color: var(--danger); border-color: #E3B8B3; background: #FFF8F7;
+}
+.capture-overlay__cancel:hover:not(:disabled) { background: #FBEDEB; border-color: var(--danger); }
 @keyframes capture-veil-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes capture-card-in {
   from { opacity: 0; transform: translateY(14px) scale(.965); filter: blur(7px); }

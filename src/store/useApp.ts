@@ -80,6 +80,8 @@ export interface AnalyzeParcelOptions {
   silent?: boolean;
   /** Saison sous laquelle enregistrer le résultat (par défaut, le filtre courant). */
   seasonId?: string;
+  /** Annulation de la requête en cours (lot d'analyses interrompu par l'utilisateur). */
+  signal?: AbortSignal;
 }
 
 /** Avancement du lot « Analyser les cultures » d'un historique. */
@@ -789,7 +791,7 @@ export const useApp = create<State>()(
             polygon: parcel.coords.map(([lat, lng]) => ({ lat, lng })),
             parcelId: isDatabaseParcelId(parcel.id) ? parcel.id : null,
             force: options?.force ?? false,
-          });
+          }, options?.signal);
 
           const [updated] = maltoToFrontend([result.parcelle], { regions: s.regions, communes: s.communes });
           if (!updated) return false;
@@ -823,6 +825,10 @@ export const useApp = create<State>()(
           }
           return true;
         } catch (err) {
+          if (options?.signal?.aborted) {
+            console.info('[AgriSat] Analyse de parcelle annulée par l’utilisateur.');
+            return false;
+          }
           console.warn('[AgriSat] Analyse de parcelle impossible :', err);
           if (!silent) get().toast(err instanceof Error ? err.message : 'Analyse de parcelle impossible.', 'danger');
           return false;

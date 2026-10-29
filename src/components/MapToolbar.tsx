@@ -105,6 +105,8 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   /** Palier réel de la capture, `null` quand elle n'est pas en cours. */
   const [captureProgress, setCaptureProgress] = useState<CaptureProgressView | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /** Annulation du lot « Analyser toutes les parcelles détectées ». */
+  const geminiBatchAbortRef = useRef<AbortController | null>(null);
   const coordinateFromInput = useRef<[number, number] | null>(null);
   const progressDoneTimer = useRef<number | null>(null);
 
@@ -177,6 +179,23 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const abortCaptureProgress = () => {
     clearProgressDoneTimer();
     setCaptureProgress(null);
+  };
+
+  /**
+   * Annule la capture ou la détection en cours.
+   *
+   * L'AbortController coupe le flux NDJSON et la requête HTTP ; le serveur peut
+   * déjà avoir enregistré des parcelles, mais l'interface cesse immédiatement
+   * d'attendre et ne présente aucun résultat partiel.
+   */
+  const cancelCapture = () => {
+    const ctrl = abortRef.current;
+    if (!ctrl || ctrl.signal.aborted) return;
+    abortRef.current = null;
+    ctrl.abort();
+    abortCaptureProgress();
+    setGeminiPending(false);
+    toast('Capture et détection annulées.', 'info');
   };
 
   /**
@@ -259,6 +278,8 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         result.parcels.length ? 'ok' : duplicates ? 'info' : 'warn',
       );
     } catch (error) {
+      // Une nouvelle capture a remplacé celle-ci : ses états ne nous appartiennent plus.
+      if (abortRef.current !== ctrl) return;
       if (!ctrl.signal.aborted) {
         const message = error instanceof Error ? error.message : String(error);
         setGeminiError(message);
@@ -273,7 +294,10 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
       }
       abortCaptureProgress();
     } finally {
-      if (!ctrl.signal.aborted) setGeminiPending(false);
+      if (abortRef.current === ctrl) {
+        abortRef.current = null;
+        setGeminiPending(false);
+      }
     }
   };
 
@@ -291,6 +315,14 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     await analyzeParcel(id);
   };
 
+  /** Annule le lot d'analyse des parcelles détectées (la parcelle en cours est interrompue). */
+  const cancelDetectedAnalysis = () => {
+    // L'état du lot est remis à zéro par `analyzeDetected` dès que la requête
+    // en cours se termine : on évite ainsi qu'un nouveau lot puisse démarrer
+    // avant que l'analyse annulée ait réellement rendu la main.
+    geminiBatchAbortRef.current?.abort();
+  };
+
   /** Analyse en lot, une parcelle à la fois (le backend ne traite qu'une analyse unitaire à la fois). */
   const analyzeDetected = async () => {
     if (!geminiResult || geminiBatch) return;
@@ -303,15 +335,40 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
       return;
     }
 
+    const ctrl = new AbortController();
+    geminiBatchAbortRef.current = ctrl;
     setGeminiBatch({ done: 0, total: targets.length });
     let failures = 0;
-    for (const parcel of targets) {
-      await analyzeParcel(parcel.id);
-      const updated = useApp.getState().parcels.find((candidate) => candidate.id === parcel.id);
-      if (!updated || !isAnalyzedParcel(updated)) failures += 1;
-      setGeminiBatch((batch) => (batch ? { done: batch.done + 1, total: batch.total } : null));
+    let done = 0;
+    let current = false;
+    try {
+      for (const parcel of targets) {
+        if (ctrl.signal.aborted) break;
+        const analyzed = await analyzeParcel(parcel.id, { signal: ctrl.signal });
+        if (ctrl.signal.aborted) break;
+        const updated = useApp.getState().parcels.find((candidate) => candidate.id === parcel.id);
+        if (!analyzed || !updated || !isAnalyzedParcel(updated)) failures += 1;
+        done += 1;
+        setGeminiBatch((batch) => (batch ? { done, total: batch.total } : null));
+      }
+    } finally {
+      current = geminiBatchAbortRef.current === ctrl;
+      if (current) {
+        geminiBatchAbortRef.current = null;
+        setGeminiBatch(null);
+      }
     }
-    setGeminiBatch(null);
+
+    // Un autre lot a pris la main : ne pas écraser son état ni afficher un
+    // message qui ne correspond plus à l'analyse visible.
+    if (!current) return;
+    if (ctrl.signal.aborted) {
+      toast(
+        `Analyse annulée : ${done}/${targets.length} parcelle(s) traitée(s). Relancez l’analyse pour reprendre.`,
+        'info',
+      );
+      return;
+    }
     toast(
       failures
         ? `${targets.length - failures} parcelle(s) analysée(s), ${failures} en échec — relancez l’analyse des échecs.`
@@ -870,6 +927,14 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
                         ? `Analyse en cours… ${geminiBatch.done}/${geminiBatch.total}`
                         : 'Analyser toutes les parcelles détectées'}
                     </button>
+                    {geminiBatch && (
+                      <button
+                        className="btn btn--sm btn--danger gemini__cancel-batch"
+                        onClick={cancelDetectedAnalysis}
+                      >
+                        <X size={14} /> Annuler l’analyse
+                      </button>
+                    )}
                     {geminiResult.parcels.map((row, index) => {
                       const parcel = useApp.getState().parcels.find((candidate) => candidate.id === row.id);
                       const analyzed = !!parcel && isAnalyzedParcel(parcel);
@@ -1037,7 +1102,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         </div>
       )}
 
-      {captureProgress && <CaptureProgressOverlay progress={captureProgress} />}
+      {captureProgress && <CaptureProgressOverlay progress={captureProgress} onCancel={cancelCapture} />}
     </>
   );
 }
