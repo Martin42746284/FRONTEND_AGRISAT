@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
-import { Check, Crosshair, Eraser, Home, Layers, Loader2, MapPin, PenTool, Search, Undo2, X, ScanSearch, Camera, Sparkles, Waypoints, Radar, Navigation, ThermometerSun } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { Check, ClipboardList, Crosshair, Eraser, Home, Layers, Loader2, MapPin, PenTool, Search, Undo2, X, ScanSearch, Camera, Sparkles, Waypoints, Radar, Navigation, ThermometerSun } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { bboxOf, centroidOf, M_PER_DEG_LAT, mPerDegLng, ringAreaHa } from '../lib/geometry';
 import { normalize, withoutToolName } from '../lib/format';
 import { parseCoordinates } from '../lib/coordinates';
 import CaptureProgressOverlay, { type CaptureProgressView } from './CaptureProgressOverlay';
-import { api, type AutomaticDetectionResult, type GeminiParcelsPayload, type GeminiParcelsResult } from '../api/services';
+import { api, type AutomaticDetectionResult, type GeminiParcelsPayload } from '../api/services';
 import { maltoToFrontend, type MaltoParcel } from '../api/maltoAdapter';
-import { isAnalyzedParcel, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
+import { parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
 import { runBatchesWithRetry } from '../lib/detect-queue';
 import type { AnalysisParcel } from '../types';
 
@@ -51,6 +51,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const cancelBornePlacement = useApp((s) => s.cancelBornePlacement);
   const setSearchedLocation = useApp((s) => s.setSearchedLocation);
   const onMapPage = useLocation().pathname === '/carte';
+  const navigate = useNavigate();
   const flyTo = useApp((s) => s.flyTo);
   const basemap = useApp((s) => s.basemap);
   const setBasemap = useApp((s) => s.setBasemap);
@@ -69,7 +70,6 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const mapSize = useApp((s) => s.mapSize);
   const setGeminiCapture = useApp((s) => s.setGeminiCapture);
   const recordCaptureAnalysis = useApp((s) => s.recordCaptureAnalysis);
-  const analyzeParcel = useApp((s) => s.analyzeParcel);
   const toast = useApp((s) => s.toast);
   const parcels = useApp((s) => s.parcels);
   const rejectedParcels = useApp((s) => s.rejectedParcels);
@@ -85,10 +85,13 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const [autoProgress, setAutoProgress] = useState<{ done: number; total: number } | null>(null);
   const [geminiOpen, setGeminiOpen] = useState(false);
   const [geminiPending, setGeminiPending] = useState(false);
-  const [geminiResult, setGeminiResult] = useState<GeminiParcelsResult | null>(null);
   const [geminiError, setGeminiError] = useState<string | null>(null);
-  /** Progression de l'analyse en lot des parcelles détectées. */
-  const [geminiBatch, setGeminiBatch] = useState<{ done: number; total: number } | null>(null);
+  /**
+   * Dernière capture terminée : les résultats (image et parcelles détectées) ne
+   * s'affichent plus ici mais dans l'historique des captures et détections.
+   * Ce drapeau ne sert qu'à proposer le lien vers cet historique.
+   */
+  const [geminiDone, setGeminiDone] = useState(false);
   const [parcelLabel, setParcelLabel] = useState('');
   const [ownerName, setOwnerName] = useState('');
   const [parcelNotes, setParcelNotes] = useState('');
@@ -105,8 +108,6 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   /** Palier réel de la capture, `null` quand elle n'est pas en cours. */
   const [captureProgress, setCaptureProgress] = useState<CaptureProgressView | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  /** Annulation du lot « Analyser toutes les parcelles détectées ». */
-  const geminiBatchAbortRef = useRef<AbortController | null>(null);
   const coordinateFromInput = useRef<[number, number] | null>(null);
   const progressDoneTimer = useRef<number | null>(null);
 
@@ -211,6 +212,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     abortRef.current = ctrl;
     setGeminiPending(true);
     setGeminiError(null);
+    setGeminiDone(false);
     startCaptureProgress();
     const targetCenter = center || mapCenter;
     try {
@@ -238,7 +240,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
       // exactement le même chemin qu'un import KML (affichage, sélection, analyse).
       const detected = maltoToFrontend(result.parcels as MaltoParcel[], { regions, communes });
       const added = addDetectedParcels(detected);
-      setGeminiResult(result);
+      setGeminiDone(true);
 
       const { bounds } = result.capture;
       setGeminiCapture({
@@ -301,82 +303,6 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         setGeminiPending(false);
       }
     }
-  };
-
-  /** Analyse une parcelle détectée via le même chemin qu'une parcelle KML. */
-  const analyzeOne = async (id: string) => {
-    const parcel = useApp.getState().parcels.find((candidate) => candidate.id === id);
-    if (!parcel) {
-      toast('Parcelle détectée introuvable — relancez la capture.', 'warn');
-      return;
-    }
-    if (isAnalyzedParcel(parcel)) {
-      toast('Cette parcelle est déjà analysée.', 'info');
-      return;
-    }
-    await analyzeParcel(id);
-  };
-
-  /** Annule le lot d'analyse des parcelles détectées (la parcelle en cours est interrompue). */
-  const cancelDetectedAnalysis = () => {
-    // L'état du lot est remis à zéro par `analyzeDetected` dès que la requête
-    // en cours se termine : on évite ainsi qu'un nouveau lot puisse démarrer
-    // avant que l'analyse annulée ait réellement rendu la main.
-    geminiBatchAbortRef.current?.abort();
-  };
-
-  /** Analyse en lot, une parcelle à la fois (le backend ne traite qu'une analyse unitaire à la fois). */
-  const analyzeDetected = async () => {
-    if (!geminiResult || geminiBatch) return;
-    const targets = geminiResult.parcels.flatMap((row) => {
-      const parcel = useApp.getState().parcels.find((candidate) => candidate.id === row.id);
-      return parcel && !parcel.rejected && !isAnalyzedParcel(parcel) ? [parcel] : [];
-    });
-    if (!targets.length) {
-      toast('Toutes les parcelles détectées sont déjà analysées.', 'info');
-      return;
-    }
-
-    const ctrl = new AbortController();
-    geminiBatchAbortRef.current = ctrl;
-    setGeminiBatch({ done: 0, total: targets.length });
-    let failures = 0;
-    let done = 0;
-    let current = false;
-    try {
-      for (const parcel of targets) {
-        if (ctrl.signal.aborted) break;
-        const analyzed = await analyzeParcel(parcel.id, { signal: ctrl.signal });
-        if (ctrl.signal.aborted) break;
-        const updated = useApp.getState().parcels.find((candidate) => candidate.id === parcel.id);
-        if (!analyzed || !updated || !isAnalyzedParcel(updated)) failures += 1;
-        done += 1;
-        setGeminiBatch((batch) => (batch ? { done, total: batch.total } : null));
-      }
-    } finally {
-      current = geminiBatchAbortRef.current === ctrl;
-      if (current) {
-        geminiBatchAbortRef.current = null;
-        setGeminiBatch(null);
-      }
-    }
-
-    // Un autre lot a pris la main : ne pas écraser son état ni afficher un
-    // message qui ne correspond plus à l'analyse visible.
-    if (!current) return;
-    if (ctrl.signal.aborted) {
-      toast(
-        `Analyse annulée : ${done}/${targets.length} parcelle(s) traitée(s). Relancez l’analyse pour reprendre.`,
-        'info',
-      );
-      return;
-    }
-    toast(
-      failures
-        ? `${targets.length - failures} parcelle(s) analysée(s), ${failures} en échec — relancez l’analyse des échecs.`
-        : `${targets.length} parcelle(s) détectée(s) analysée(s).`,
-      failures ? 'warn' : 'ok',
-    );
   };
 
   const saveManualParcel = async () => {
@@ -666,6 +592,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const closeGemini = () => {
     setGeminiOpen(false);
     setGeminiError(null);
+    setGeminiDone(false);
     setGeminiCapture(null);
   };
 
@@ -901,95 +828,19 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
             {geminiPending && (
               <span className="hint">Capture de l’image satellite puis analyse — quelques secondes à une minute…</span>
             )}
-            {geminiResult && (
-              <img
-                className="gemini__preview"
-                src={geminiResult.capture.image_data_url}
-                alt="Capture satellite analysée"
-              />
-            )}
-            {geminiResult && (
-              <div className="autosearch__results gemini__results">
-                <b>
-                  {geminiResult.summary.detected} détectée(s) · {geminiResult.summary.created} créée(s)
-                  {geminiResult.summary.duplicates ? ` · ${geminiResult.summary.duplicates} déjà en base` : ''}
-                </b>
-                {geminiResult.warnings.map((warning) => (
-                  <p className="note note--warn" key={warning}>{withoutToolName(warning)}</p>
-                ))}
-                {geminiResult.parcels.length > 0 && (
-                  <>
-                    <button
-                      className="btn btn--sm btn--primary gemini__analyze-all"
-                      onClick={() => void analyzeDetected()}
-                      disabled={!!geminiBatch}
-                    >
-                      <ScanSearch size={14} />{' '}
-                      {geminiBatch
-                        ? `Analyse en cours… ${geminiBatch.done}/${geminiBatch.total}`
-                        : 'Analyser toutes les parcelles détectées'}
-                    </button>
-                    {geminiBatch && (
-                      <button
-                        className="btn btn--sm btn--danger gemini__cancel-batch"
-                        onClick={cancelDetectedAnalysis}
-                      >
-                        <X size={14} /> Annuler l’analyse
-                      </button>
-                    )}
-                    {geminiResult.parcels.map((row, index) => {
-                      const parcel = useApp.getState().parcels.find((candidate) => candidate.id === row.id);
-                      const analyzed = !!parcel && isAnalyzedParcel(parcel);
-                      const label = row.label?.trim() ? withoutToolName(row.label.trim()) : `Parcelle ${index + 1}`;
-                      return (
-                        <div className={`gemini__row ${selectedId === row.id ? 'is-selected' : ''}`} key={row.id}>
-                          <button
-                            className="autosearch__result"
-                            onClick={() => {
-                              if (!parcel) {
-                                toast('Parcelle détectée introuvable — relancez la capture.', 'warn');
-                                return;
-                              }
-                              useApp.getState().select(row.id);
-                              flyTo({ center: parcel.centroid, zoom: 20 });
-                            }}
-                          >
-                            <span className={`autosearch__dot ${analyzed ? 'autosearch__dot--barley' : 'autosearch__dot--other'}`} />
-                            <span>
-                              <strong>{label}</strong>
-                              <small>
-                                {row.surface_ha != null ? `${row.surface_ha.toFixed(2)} ha` : 'superficie inconnue'}
-                                {analyzed ? ' · analysée' : ' · à analyser'}
-                              </small>
-                            </span>
-                          </button>
-                          <button
-                            className="icon-btn"
-                            title="Analyser cette parcelle"
-                            aria-label={`Analyser ${label}`}
-                            onClick={() => void analyzeOne(row.id)}
-                            disabled={analyzed || !!geminiBatch}
-                          >
-                            <ScanSearch size={14} />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </>
-                )}
-                {geminiResult.existing.length > 0 && (
-                  <details className="gemini__existing">
-                    <summary>{geminiResult.existing.length} parcelle(s) déjà en base</summary>
-                    <ul>
-                      {geminiResult.existing.map((item) => (
-                        <li key={item.id}>
-                          {item.label ? withoutToolName(item.label) : item.id}
-                          {item.surface_ha != null ? ` · ${item.surface_ha.toFixed(2)} ha` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
+            {geminiDone && !geminiPending && (
+              <div className="gemini__history">
+                <b>Capture et détection terminées.</b>
+                <span className="hint">
+                  L’image du terrain capturé, la liste des parcelles détectées et l’analyse des cultures
+                  sont disponibles dans l’historique des captures et des détections.
+                </span>
+                <button
+                  className="btn btn--primary gemini__capture"
+                  onClick={() => { closeGemini(); navigate('/analyses'); }}
+                >
+                  <ClipboardList size={15} /> Voir l’historique des captures et détections
+                </button>
               </div>
             )}
           </section>

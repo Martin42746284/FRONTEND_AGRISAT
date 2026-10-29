@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';
 import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, useApp } from '../store/useApp';
 import { computeStyle } from '../lib/style';
-import { bboxOfAll, ringAreaHa } from '../lib/geometry';
+import { bboxOfAll } from '../lib/geometry';
 import { ROLES } from '../data/constants';
 import type { Parcel } from '../types';
 import { isAnalyzedParcel } from '../lib/analysis-parcels';
@@ -617,6 +617,15 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       // les parcelles non classées. Une fois analysé, la parcelle reprend le
       // style de culture habituel (flux KML/tracé manuel).
       const isGeminiOutline = isGeminiParcel(parcel) && !isAnalyzedParcel(parcel);
+      // Contour automatique VHR qui n'a encore jamais été analysé : il conserve
+      // son style de tracé automatique (jaune, pointillé si la parcelle est
+      // petite), qui signale l'incertitude de la délimitation.
+      const isUntouchedVhrOutline = result.modelVersion.includes('Delineate Anything');
+      // Aucune culture enregistrée : parcelle tracée à la main et pas encore
+      // analysée, culture supprimée depuis la fiche, ou contour jamais classé.
+      // Le contour reprend alors le rouge de référence des délimitations Gemini
+      // et KML — il n'a aucune couleur de culture à afficher.
+      const hasNoCulture = !isAnalyzedParcel(parcel) && !isUntouchedVhrOutline;
       // Contour importé depuis un fichier KML : trait rouge de référence des
       // tracés Gemini, pour une lecture visuelle cohérente sur la carte. Une
       // parcelle blé/avoine, toujours classée « Autre culture » par la règle
@@ -631,9 +640,10 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         onMap.current.delete(parcel.id);
         continue;
       }
-      const isManualParcel = result.analysisId.startsWith('MALTO-') && (result.culture === 'inconnue' || !result.confidence);
-      const isVhrOutline = result.modelVersion.includes('Delineate Anything') || isManualParcel;
-      const displayStyle = isGeminiOutline || isKmlReference
+      const isUnclassifiedMalto = result.analysisId.startsWith('MALTO-') && (result.culture === 'inconnue' || !result.confidence);
+      const isVhrOutline = isUntouchedVhrOutline || isUnclassifiedMalto;
+      const isReferenceOutline = isGeminiOutline || isKmlReference || hasNoCulture;
+      const displayStyle = isReferenceOutline
         ? {
           fillColor: GEMINI_OUTLINE_COLOR,
           fillOpacity: 0,
@@ -773,12 +783,13 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     manualPreview.current?.setMap(null);
     manualPreview.current = null;
     if (!map || !manualParcelDraft) return;
-    const previewStyle = parcelOutlineStyle({ areaHa: ringAreaHa(manualParcelDraft) } as Parcel, false);
+    // Aperçu du tracé manuel : rouge comme le contour une fois enregistré (la
+    // parcelle n'a pas encore de culture).
     manualPreview.current = new google.maps.Polygon({
       map,
       paths: manualParcelDraft.map(([lat, lng]) => ({ lat, lng })),
-      strokeColor: previewStyle.strokeColor, strokeOpacity: previewStyle.strokeOpacity, strokeWeight: previewStyle.strokeWeight,
-      fillColor: previewStyle.fillColor, fillOpacity: previewStyle.fillOpacity,
+      strokeColor: GEMINI_OUTLINE_COLOR, strokeOpacity: 1, strokeWeight: 2,
+      fillColor: GEMINI_OUTLINE_COLOR, fillOpacity: 0,
     });
     return () => {
       manualPreview.current?.setMap(null);

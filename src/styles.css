@@ -472,6 +472,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .gemini__view dd { margin: 0; font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .gemini__capture, .gemini__analyze-all, .gemini__cancel-batch { width: 100%; justify-content: center; }
 .gemini__preview { display: block; width: 100%; margin: 6px 0; border: 1px solid var(--line-2); border-radius: 8px; }
+.gemini__history { display: grid; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-2); }
 .gemini__results { gap: 6px; }
 .gemini__row { display: flex; align-items: stretch; gap: 4px; }
 .gemini__row .autosearch__result { flex: 1; }

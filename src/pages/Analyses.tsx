@@ -102,6 +102,9 @@ export default function Analyses() {
                 {analyses.map((a) => {
                   const rowCounts = cultureCounts.get(a.id);
                   const cultureRunning = cultureJob?.analysisId === a.id;
+                  // Entrée de l'historique des captures : l'analyse porte sur toutes
+                  // les parcelles détectées sur l'image du terrain.
+                  const analysisLabel = a.zone ? 'Analyser toutes les parcelles détectées' : 'Analyser les cultures';
                   return (
                     <tr key={a.id} onClick={() => setOpen(a.id)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setOpen(a.id)}>
                       <td>
@@ -128,7 +131,7 @@ export default function Analyses() {
                             >
                               {cultureRunning
                                 ? <><Loader2 size={13} className="capture-progress__spin" /> Analyse {cultureJob?.done ?? 0}/{cultureJob?.total ?? 0}</>
-                                : <><ScanSearch size={13} /> Analyser les cultures</>}
+                                : <><ScanSearch size={13} /> {analysisLabel}</>}
                             </button>
                           )}
                           {a.zone && (
@@ -174,7 +177,7 @@ export default function Analyses() {
                 >
                   {currentCultureRunning
                     ? <><Loader2 size={14} className="capture-progress__spin" /> Analyse {cultureJob?.done ?? 0}/{cultureJob?.total ?? 0}</>
-                    : <><ScanSearch size={14} /> Analyser les cultures</>}
+                    : <><ScanSearch size={14} /> {current.zone ? 'Analyser toutes les parcelles détectées' : 'Analyser les cultures'}</>}
                 </button>
               )}
               <button className="btn btn--primary" onClick={() => showOnMap(current)}><MapPin size={14} /> Voir la carte</button>
