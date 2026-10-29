@@ -7,6 +7,7 @@ import { CULTURES, CULTURE_BY_ID, ROLES, SEASONS, SEASON_BY_ID } from '../data/c
 import { fmtDate, fmtHa, fmtPct, withoutToolName } from '../lib/format';
 import { isUncertain } from '../lib/filter';
 import { ringAreaHa } from '../lib/geometry';
+import { PREVIEW_SIZE, previewPolygonPoints } from '../lib/parcel-preview';
 import { isAnalyzedParcel } from '../lib/analysis-parcels';
 import { mapCulture } from '../api/maltoAdapter';
 import { api } from '../api/services';
@@ -34,15 +35,37 @@ function fmtMonth(iso: string): string {
   return d.toLocaleDateString('fr-FR', { month: 'short', year: '2-digit' });
 }
 
+/**
+ * Aperçu vectoriel de la parcelle.
+ *
+ * Le dessin est calculé dans un carré de 320 px (rendu 2× de la vignette de
+ * 160 px) : les coordonnées sont converties en pixels, le contour garde une
+ * épaisseur constante de 2 px (`non-scaling-stroke`) et le remplissage est
+ * opaque. Le contour reste donc net à toute taille d’écran, sans déformation,
+ * au lieu du trait fin et translucide qui rendait l’aperçu flou.
+ */
 function Shape({ p, color }: { p: Parcel; color: string }) {
-  const lats = p.coords.map((c) => c[0]), lngs = p.coords.map((c) => c[1]);
-  const minLa = Math.min(...lats), maxLa = Math.max(...lats), minLo = Math.min(...lngs), maxLo = Math.max(...lngs);
-  const k = Math.cos((p.centroid[0] * Math.PI) / 180);
-  const w = (maxLo - minLo) * k, h = maxLa - minLa, m = Math.max(w, h) * 0.18;
-  const pts = p.coords.map(([la, lo]) => `${(lo - minLo) * k + m},${maxLa - la + m}`).join(' ');
+  const pts = previewPolygonPoints(p.coords, p.centroid);
   return (
-    <svg viewBox={`0 0 ${w + 2 * m} ${h + 2 * m}`} className="shape" role="img" aria-label="Géométrie de la parcelle">
-      <polygon points={pts} fill={color} fillOpacity={0.6} stroke="#12262B" strokeWidth={Math.max(w, h) * 0.012} strokeLinejoin="round" />
+    <svg
+      viewBox={`0 0 ${PREVIEW_SIZE} ${PREVIEW_SIZE}`}
+      preserveAspectRatio="xMidYMid meet"
+      shapeRendering="geometricPrecision"
+      className="shape"
+      role="img"
+      aria-label={pts ? 'Géométrie de la parcelle' : 'Géométrie indisponible'}
+    >
+      {pts && (
+        <polygon
+          points={pts}
+          fill={color}
+          fillOpacity={0.92}
+          stroke="#0B1F24"
+          strokeWidth={2}
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
     </svg>
   );
 }

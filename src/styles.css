@@ -91,8 +91,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* ---------- Fiche parcelle ---------- */
 .drawer__head { display: flex; justify-content: space-between; padding: 14px 16px 10px; border-bottom: 1px solid var(--line); } .drawer__head h2 { margin: 0; font-size: 17px; } .drawer__head p { margin: 0; color: var(--ink-3); font-size: 13px; }
 .drawer__body { overflow: auto; padding: 4px 16px 24px; } .drawer__body section { padding: 12px 0; border-bottom: 1px solid var(--line-2); } .drawer__empty { padding: 16px; color: var(--ink-3); }
-.drawer__top { display: grid; grid-template-columns: 120px 1fr; gap: 14px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line-2); }
-.shape { width: 120px; height: 120px; background: #fff; border: 1px solid var(--line); border-radius: var(--r); }
+.drawer__top { display: grid; grid-template-columns: 160px 1fr; gap: 14px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line-2); }
+.shape { display: block; width: 160px; height: 160px; background: #fff; border: 1px solid var(--line); border-radius: var(--r); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; align-items: center; } .kv dt { color: var(--ink-3); font-size: 12.5px; } .kv dd { margin: 0; } .kv .big { font-size: 20px; font-weight: 650; } .kv--wide dd { font-size: 13px; }
 .culture-line { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; } .culture-line strong { font-size: 16px; }
 .probs { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; } .probs li { display: grid; grid-template-columns: 130px 1fr 44px; gap: 8px; align-items: center; font-size: 12.5px; } .probs em { font-style: normal; text-align: right; color: var(--ink-3); }
