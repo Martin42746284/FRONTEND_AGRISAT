@@ -16,7 +16,7 @@ export interface CorrectionText {
 /**
  * Textes associés à une classe corrigée à la main.
  *
- * Le verdict et les détails d'une parcelle sont ceux du modèle (« ❌ NON-ORGE —
+ * Le verdict et les détails d'une parcelle sont ceux du modèle (« Autre culture —
  * RF Orge … ») : après une correction ils décrivaient encore l'ancienne classe
  * et contredisaient la fiche. Ils sont réécrits à partir de la classe retenue,
  * en conservant le motif saisi par l'utilisateur.

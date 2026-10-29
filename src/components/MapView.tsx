@@ -6,7 +6,7 @@ import { bboxOfAll, ringAreaHa } from '../lib/geometry';
 import { ROLES } from '../data/constants';
 import type { Parcel } from '../types';
 import { isAnalyzedParcel } from '../lib/analysis-parcels';
-import { parcelOutlineStyle } from '../lib/parcel-outline-style';
+import { GEMINI_OUTLINE_COLOR, parcelOutlineStyle } from '../lib/parcel-outline-style';
 import { isGeminiParcel } from '../lib/parcel-sources';
 import { pickParcelAt } from '../lib/parcel-selection';
 
@@ -207,7 +207,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     };
   }, [map]);
 
-  // Repère rouge déplaçable pour choisir le centre de l’analyse orge/non-orge.
+  // Repère rouge déplaçable pour choisir le centre de l’analyse orge / autre culture.
   useEffect(() => {
     if (!map || !automaticSearchCenter) {
       searchCenterMarker.current?.setMap(null);
@@ -223,7 +223,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       map,
       position,
       draggable: true,
-      title: 'Déplacer le centre de recherche de l’analyse orge/non-orge',
+      title: 'Déplacer le centre de recherche de l’analyse orge / autre culture',
       zIndex: google.maps.Marker.MAX_ZINDEX + 1,
     });
     marker.addListener('dragend', () => {
@@ -531,7 +531,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     }
   }, [map, parcels, editingParcelId]);
 
-  // Résultats temporaires de recherche orge/non-orge, distincts des parcelles enregistrées.
+  // Résultats temporaires de recherche orge / autre culture, distincts des parcelles enregistrées.
   useEffect(() => {
     automaticLayers.current.forEach((layer) => layer.setMap(null));
     automaticLayers.current = [];
@@ -617,19 +617,27 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       // les parcelles non classées. Une fois analysé, la parcelle reprend le
       // style de culture habituel (flux KML/tracé manuel).
       const isGeminiOutline = isGeminiParcel(parcel) && !isAnalyzedParcel(parcel);
+      // Contour importé depuis un fichier KML : trait rouge de référence des
+      // tracés Gemini, pour une lecture visuelle cohérente sur la carte. Une
+      // parcelle blé/avoine, toujours classée « Autre culture » par la règle
+      // métier, reprend la couleur de ce statut dès qu'elle est analysée.
+      const isKmlReference = Boolean(
+        (parcel.kmlImported || parcel.kmlCulture)
+        && !(parcel.kmlCulture && isAnalyzedParcel(parcel)),
+      );
       const { visible, options } = computeStyle(result, context, parcel.id === selectedId);
-      if (!visible && !isGeminiOutline) {
+      if (!visible && !isGeminiOutline && !isKmlReference) {
         polygon.setMap(null);
         onMap.current.delete(parcel.id);
         continue;
       }
       const isManualParcel = result.analysisId.startsWith('MALTO-') && (result.culture === 'inconnue' || !result.confidence);
       const isVhrOutline = result.modelVersion.includes('Delineate Anything') || isManualParcel;
-      const displayStyle = isGeminiOutline
+      const displayStyle = isGeminiOutline || isKmlReference
         ? {
-          fillColor: '#FF0000',
+          fillColor: GEMINI_OUTLINE_COLOR,
           fillOpacity: 0,
-          strokeColor: '#FF0000',
+          strokeColor: GEMINI_OUTLINE_COLOR,
           strokeOpacity: 1,
           strokeWeight: parcel.id === selectedId ? 3 : 2,
         }

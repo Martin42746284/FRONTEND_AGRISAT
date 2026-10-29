@@ -4,7 +4,7 @@ import { Plus, RotateCcw, Check, CircleDot, Circle, MapPin, Trash2, ScanSearch, 
 import { useApp } from '../store/useApp';
 import type { Analysis, AnalysisParcel } from '../types';
 import { PIPELINE_STEPS, ROLES, SEASON_BY_ID } from '../data/constants';
-import { fmtDate, fmtHa, fmtInt } from '../lib/format';
+import { fmtDate, fmtHa, fmtInt, withoutToolName } from '../lib/format';
 import { cultureCountsForAnalysis, type AnalysisCultureCounts } from '../lib/analysis-parcels';
 import { AnalysisBadge, Empty, Modal } from '../components/ui';
 import NewAnalysisModal from '../components/NewAnalysisModal';
@@ -110,7 +110,7 @@ export default function Analyses() {
                           <span><b>{a.id}</b>{a.cached && <span className="tag">cache</span>}</span>
                         </div>
                       </td>
-                      <td>{a.zoneLabel}</td>
+                      <td>{withoutToolName(a.zoneLabel)}</td>
                       <td>{SEASON_BY_ID[a.seasonId]?.short}</td>
                       <td><AnalysisBadge status={a.status} /></td>
                       <td>{rowCounts && <CultureCounts counts={rowCounts} />}</td>
@@ -183,11 +183,11 @@ export default function Analyses() {
         >
           <div className="an-head">
             <AnalysisBadge status={current.status} />
-            <span>{current.zoneLabel} · {SEASON_BY_ID[current.seasonId]?.label}</span>
+            <span>{withoutToolName(current.zoneLabel)} · {SEASON_BY_ID[current.seasonId]?.label}</span>
           </div>
           {currentCounts && <CultureCounts counts={currentCounts} />}
-          {current.error && <p className="note note--danger">{current.error}</p>}
-          {current.warnings.map((w, i) => <p key={i} className="note note--warn">{w}</p>)}
+          {current.error && <p className="note note--danger">{withoutToolName(current.error)}</p>}
+          {current.warnings.map((w, i) => <p key={i} className="note note--warn">{withoutToolName(w)}</p>)}
           {current.captureDataUrl && (
             <img className="an-capture" src={current.captureDataUrl} alt="Capture satellite de la zone analysée" />
           )}
@@ -200,7 +200,7 @@ export default function Analyses() {
                 <dd>{current.zone.spanM ? `${Math.round(current.zone.spanM)} m · zoom ${current.zone.zoom}` : '—'}</dd>
               </>
             )}
-            <dt>Version du pipeline</dt><dd>{current.pipelineVersion}</dd>
+            <dt>Version du pipeline</dt><dd>{withoutToolName(current.pipelineVersion)}</dd>
             <dt>Scènes utilisées</dt><dd>{current.scenes || '—'}</dd>
             <dt>Résultat</dt><dd>{current.parcelCount !== undefined ? `${fmtInt(current.parcelCount)} parcelles · ${fmtHa(current.areaHa ?? 0)}` : '—'}</dd>
             <dt>Début → fin</dt><dd>{fmtDate(current.startedAt, true)} → {fmtDate(current.finishedAt, true)}</dd>
@@ -211,7 +211,7 @@ export default function Analyses() {
               <ul className="an-parcels">
                 {current.detected.map((p) => (
                   <li key={p.id}>
-                    <span><b>{p.label}</b><small>{fmtHa(p.areaHa)}</small></span>
+                    <span><b>{withoutToolName(p.label)}</b><small>{fmtHa(p.areaHa)}</small></span>
                     <button className="btn btn--sm" onClick={() => showOnMap(current, p)}><MapPin size={13} /> Voir sur la carte</button>
                   </li>
                 ))}
@@ -239,7 +239,7 @@ export default function Analyses() {
           <div className="logs">
             {current.logs.length === 0 && <span className="muted">Aucun message pour l'instant.</span>}
             {current.logs.map((l, i) => (
-              <div key={i} className={`log log--${l.level}`}><time>{new Date(l.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</time>{l.msg}</div>
+              <div key={i} className={`log log--${l.level}`}><time>{new Date(l.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</time>{withoutToolName(l.msg)}</div>
             ))}
           </div>
         </Modal>

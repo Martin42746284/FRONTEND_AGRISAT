@@ -2,7 +2,7 @@
  * Bootstrap 100 % Malto — aucune donnée fictive dans les parcelles, régions, communes.
  *
  * Sources réelles (backend Malto, base Neon Postgres) :
- *   GET /api/parcelles      → parcelles FTW classifiées orge / non-orge (RF Sentinel-2)
+ *   GET /api/parcelles      → parcelles FTW classifiées orge / autre culture (RF Sentinel-2)
  *   GET /api/zone-parcels   → tracés VHR (Delineate Anything) autour d'Antsirabe
  *
  * Régions et communes sont reconstruites À PARTIR DES PARCELLES réelles (enveloppe

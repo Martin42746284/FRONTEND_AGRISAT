@@ -2,14 +2,14 @@
  * Adaptateur Malto → modèle frontend.
  *
  * Malto expose `GET /api/parcelles` : polygones FTW (field boundaries) détectés par
- * segmentation, classés orge / non-orge par un RF Sentinel-2, autour d'Antsirabe :
+ * segmentation, classés orge / autre culture par un RF Sentinel-2, autour d'Antsirabe :
  *   { id: uuid, label, coordinates: [{lat,lng}], center_lat, center_lng, surface_ha,
- *     culture_declared, culture_detected («Orge» | «Non-orge»), ndvi_percentage,
+ *     culture_declared, culture_detected («Orge» | «Autre culture»), ndvi_percentage,
  *     confidence (0–100, probabilité d'orge), verdict («✅ ORGE CONFIRMÉE — … (xx%)»),
  *     saison («Montaison», stade de croissance), owner_name, notes, created_at, … }
  *
  * Correspondance vers le modèle `Parcel` du frontend (src/types.ts) :
- *   - confidence en % → probabilité 0–1, inversée pour les «Non-orge» ;
+ *   - confidence en % → probabilité 0–1, inversée pour l'ancien libellé «Non-orge» ;
  *   - saison = stade de croissance → rattachée à la saison par défaut (2026-C),
  *     le stade est conservé dans modelVersion («Malto FTW · Montaison») ;
  *   - surface_ha = 0 → recalculée depuis la géométrie du polygone ;
@@ -17,6 +17,7 @@
  */
 import type { CropResult, CultureDetail, CultureId, LatLng, Parcel, Status, Region, Commune } from '../types';
 import { pointInPolygon, ringAreaHa } from '../lib/geometry';
+import { normalize } from '../lib/format';
 import { statusFromConfidence } from '../lib/parcel-status';
 import { request } from './http';
 import { DEFAULT_SEASON, SEASON_BY_ID, CURRENT_MODEL } from '../data/constants';
@@ -106,7 +107,7 @@ const CULTURE_MAP: Record<string, CultureId> = {
 
 /**
  * Culture reconnue depuis un libellé ou un identifiant de culture, ou `null`
- * quand la valeur n'en désigne aucune (« Non-orge », texte libre…).
+ * quand la valeur n'en désigne aucune (ancien « Non-orge », texte libre…).
  */
 export function knownCulture(raw: string | null | undefined): CultureId | null {
   if (!raw) return null;
@@ -125,30 +126,42 @@ function orgeProbFromVerdict(verdict: string | null | undefined): number | null 
   return m ? Number(m[1].replace(',', '.')) / 100 : null;
 }
 
+/**
+ * Ancien libellé binaire « Non-orge » encore présent dans des lignes enregistrées
+ * avant le renommage : il désigne « Autre culture » et reste lu comme tel.
+ */
 function isNonOrge(p: MaltoParcel): boolean {
   const raw = (p.culture_detected ?? '').toLowerCase();
   return raw.includes('non-orge') || raw.includes('non orge');
 }
 
 /**
- * Confiance du classement ТС, 0-1 :
- *  - culture_detected renseigné → `confidence` Malto est la probabilité d'orge (0–100)
- *    dans le verdict (elle est déjà la certitude du classement, pas besoin d'inverser) ;
- *  - culture_detected absent → pas encore classifiée : culture = inconnue, confiance 0.
+ * Confiance du classement, 0-1.
+ *
+ *  - culture_detected absent → parcelle non encore classée : confiance 0.
+ *  - `confidence` Malto est la certitude de la classe retenue (0–100) : elle est
+ *    reprise telle quelle. Pour les anciennes lignes « Non-orge », elle portait
+ *    la probabilité de non-orge et doit être inversée.
+ *  - sans `confidence`, la probabilité d'orge du verdict est utilisée et
+ *    inversée pour « Autre culture » (c'est alors la certitude de cette classe).
  */
 function mapConfidence(p: MaltoParcel): number {
   const declared = (p.culture_detected ?? '').trim() !== '';
   if (!declared) return 0.05; // non encore classifiée
-  let conf = p.confidence ?? orgeProbFromVerdict(p.verdict);
-  if (conf == null) conf = p.ndvi_percentage != null ? p.ndvi_percentage / 100 : 0.5;
-  else if (conf > 1) conf /= 100; // % → probabilité
-    // Si c'est détecté comme « Non-orge », inverser : confidence est la probabilité de non-orge,
-    // donc la probabilité d'orge est 1 - conf
-    if (isNonOrge(p) || (p.verdict ?? '').toLowerCase().includes('non-orge')) {
-      conf = 1 - conf;
-    }
-    return Math.min(0.99, Math.max(0.05, conf));
+  const legacyNonOrge = isNonOrge(p) || (p.verdict ?? '').toLowerCase().includes('non-orge');
+  const otherCulture = legacyNonOrge || mapCulture(p.culture_detected) === 'autre';
+  let conf: number | null = p.confidence ?? null;
+  if (conf != null) {
+    if (conf > 1) conf /= 100; // % → probabilité
+    if (legacyNonOrge) conf = 1 - conf;
+  } else {
+    const orgeProb = orgeProbFromVerdict(p.verdict);
+    conf = orgeProb == null
+      ? (p.ndvi_percentage != null ? p.ndvi_percentage / 100 : 0.5)
+      : (otherCulture ? 1 - orgeProb : orgeProb);
   }
+  return Math.min(0.99, Math.max(0.05, conf));
+}
   
 /**
  * Statut dérivé : verdict Malto → workflow frontal.
@@ -170,6 +183,34 @@ function mapSeason(raw: string | null | undefined): { id: string; stage: string 
   const s = raw?.trim() ?? '';
   if (s && SEASON_BY_ID[s]) return { id: s, stage: s };
   return { id: DEFAULT_SEASON, stage: s };
+}
+
+/**
+ * Culture blé/avoine déclarée dans le KML d'origine.
+ *
+ * Le marqueur est écrit dans `notes` par l'import KML et survit à la suppression
+ * de la culture : ces parcelles restent toujours analysées « Autre culture ».
+ */
+function kmlCultureFromNotes(notes: string | null | undefined): 'ble' | 'avoine' | undefined {
+  const marker = notes?.match(/culture d['’]origine\s*\(kml\)\s*:\s*([^.;\n]+)/i);
+  if (!marker) return undefined;
+  const label = normalize(marker[1]);
+  if (/\bavoine\b/.test(label)) return 'avoine';
+  if (/\bble\b/.test(label)) return 'ble';
+  return undefined;
+}
+
+/**
+ * Contour importé depuis un fichier KML.
+ *
+ * L'import écrit `data_source = « Import KML »` et un préfixe « Import KML — … »
+ * dans `notes`. Une réanalyse peut changer `data_source` : le préfixe de `notes`,
+ * lui, est conservé, ce qui permet de reconnaître la parcelle et de la tracer en
+ * rouge quelle que soit sa culture.
+ */
+function kmlImportedFrom(p: MaltoParcel): boolean {
+  if ((p.data_source ?? '').trim().toLowerCase() === 'import kml') return true;
+  return /import\s+kml/i.test(p.notes ?? '');
 }
 
 /** Libellés de « culture déclarée » qui ne décrivent pas une culture réelle. */
@@ -246,16 +287,18 @@ export function maltoToFrontend(parcels: MaltoParcel[], zones?: MaltoZoneInfo): 
       const season = mapSeason(p.saison);
       const detected = (p.culture_detected ?? '').trim();
       const verdict = (p.verdict ?? '').toLowerCase();
-      // La classe enregistrée fait foi : libellé (« Orge », « Riz ») ou identifiant
-      // (`sol_nu`, `pomme_de_terre`). Le classifieur binaire orge/non-orge ne sert
-      // que lorsque la valeur stockée n'est pas une culture (« Non-orge »).
+      // La classe *analysée* fait foi : libellé (« Orge », « Autre culture », « Riz »)
+      // ou identifiant (`sol_nu`, `pomme_de_terre`). Le classifieur binaire ne sert
+      // que lorsque la valeur stockée est l'ancien statut « Non-orge ». Une culture
+      // seulement déclarée (repère KML) n'est pas un résultat : la parcelle reste
+      // « inconnue » tant que le modèle ne l'a pas analysée.
       const culture: CultureId =
         knownCulture(detected)
         ?? (detected
           ? (isNonOrge(p) ? 'autre' : 'orge')
           : verdict.includes('non-orge') || verdict.includes('non orge')
             ? 'autre'
-            : (knownCulture(p.culture_declared) ?? (p.culture_declared?.trim() ? 'autre' : 'inconnue')));
+            : 'inconnue');
       const conf = mapConfidence(p);
       const processedAt = p.created_at || new Date().toISOString();
 
@@ -294,6 +337,8 @@ export function maltoToFrontend(parcels: MaltoParcel[], zones?: MaltoZoneInfo): 
         results: { [season.id]: result },
         corrections: [],
         dataSource: p.data_source ?? undefined,
+        kmlImported: kmlImportedFrom(p),
+        kmlCulture: kmlCultureFromNotes(p.notes),
         cultureDetail: mapCultureDetail(p),
         rejected: false,
       };

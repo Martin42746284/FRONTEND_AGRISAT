@@ -1,15 +1,19 @@
 import { useMemo, useState } from 'react';
-import { Bar, BarChart, CartesianGrid, Cell, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useApp } from '../store/useApp';
 import { useAggregate, useBase, useFinal } from '../store/selectors';
-import { CULTURES, CULTURE_BY_ID, SEASONS } from '../data/constants';
+import { CULTURES, CULTURE_BY_ID, SEASONS, STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from '../data/constants';
 import { fmtHa, fmtInt } from '../lib/format';
 import { aggregate, baseFilter, isUncertain } from '../lib/filter';
+import type { Status } from '../types';
 import FiltersPanel from '../components/FiltersPanel';
 import ExportMenu from '../components/ExportMenu';
 import { Empty, Swatch } from '../components/ui';
 
 const nf = (n: number) => fmtInt(Math.round(n));
+const pct = (v: number, total: number) => (total > 0 ? `${(v / total * 100).toFixed(1).replace('.', ',')} %` : '—');
+type StatusMetric = 'count' | 'area';
+interface StatusRow { id: Status; count: number; area: number }
 
 export default function Dashboard() {
   const f = useApp((s) => s.filters);
@@ -24,6 +28,37 @@ export default function Dashboard() {
   const aggBase = useAggregate(base);
   const aggFinal = useAggregate(final);
   const [seasonB, setSeasonB] = useState(SEASONS[1].id);
+  const [statusMetric, setStatusMetric] = useState<StatusMetric>('count');
+
+  // Parcelles d'orge : la répartition des statuts doit rester lisible même
+  // lorsqu'un filtre de statut est actif, sinon elle ne montrerait qu'une seule classe.
+  const orge = useMemo(() => {
+    const views = baseFilter(parcels, { ...f, statuses: [] }, zone);
+    const acc = new Map<Status, { count: number; area: number }>();
+    let count = 0;
+    let area = 0;
+    for (const { p, r } of views) {
+      if (r.culture !== 'orge') continue;
+      count += 1;
+      area += p.areaHa;
+      const a = acc.get(r.status) ?? { count: 0, area: 0 };
+      a.count += 1;
+      a.area += p.areaHa;
+      acc.set(r.status, a);
+    }
+    const rows: StatusRow[] = STATUS_ORDER.filter((s) => acc.has(s)).map((s) => ({ id: s, ...acc.get(s)! }));
+    return { count, area, rows, scopeCount: views.length, scopeArea: views.reduce((s, v) => s + v.p.areaHa, 0) };
+  }, [parcels, f, zone]);
+
+  const statusRows = useMemo(
+    () => [...orge.rows].sort((a, b) => (statusMetric === 'count' ? b.count - a.count : b.area - a.area)),
+    [orge.rows, statusMetric],
+  );
+  const pieData = statusRows.map((r) => ({
+    label: STATUS_LABEL[r.id],
+    value: statusMetric === 'count' ? r.count : +r.area.toFixed(2),
+    color: STATUS_COLOR[r.id],
+  }));
 
   const byCulture = useMemo(
     () => CULTURES.filter((c) => aggBase.byCulture[c.id]).map((c) => ({ id: c.id, name: c.label, ha: +aggBase.byCulture[c.id].area.toFixed(1), n: aggBase.byCulture[c.id].count }))
@@ -82,7 +117,7 @@ export default function Dashboard() {
       <FiltersPanel withCultures />
       <div className="content">
         <div className="content__head">
-          <div><h1>Tableau de bord</h1><p className="muted">{seasonA.label} · mêmes filtres que la carte et le tableau des parcelles.</p></div>
+          <div><h1>Tableau de bord</h1><p className="muted">{seasonA.label} · vue d'ensemble des parcelles, des superficies et de la qualité des données.</p></div>
           <ExportMenu />
         </div>
 
@@ -93,7 +128,84 @@ export default function Dashboard() {
               <div className="kpi"><span>Parcelles validées</span><b>{nf(aggBase.validated)}</b><em>{((aggBase.validated / aggBase.count) * 100).toFixed(1).replace('.', ',')} % du total</em></div>
               <div className="kpi"><span>Superficie analysée</span><b>{fmtHa(aggBase.area)}</b></div>
               <div className="kpi kpi--warn"><span>Incertaines ou non classées</span><b>{nf(aggBase.uncertain)}</b><em>{fmtHa(aggBase.uncertainArea)}</em></div>
+              <div className="kpi"><span>Parcelles d'orge</span><b>{nf(orge.count)}</b><em>{fmtHa(orge.area)} · {pct(orge.count, orge.scopeCount)} des parcelles</em></div>
             </div>
+
+            <section className="card status-card">
+              <div className="card__head">
+                <div>
+                  <h2>Répartition des parcelles d'orge par statut</h2>
+                  <p className="hint">
+                    Toutes les parcelles classées « orge » pour la saison {seasonA.short} et les filtres actifs. Le filtre de statut n'est pas appliqué ici, afin de garder la vue d'ensemble.
+                  </p>
+                </div>
+                <div className="seg seg--sm" role="group" aria-label="Grandeur affichée dans le graphique">
+                  <button type="button" className={statusMetric === 'count' ? 'is-on' : ''} aria-pressed={statusMetric === 'count'} onClick={() => setStatusMetric('count')}>Nombre de parcelles</button>
+                  <button type="button" className={statusMetric === 'area' ? 'is-on' : ''} aria-pressed={statusMetric === 'area'} onClick={() => setStatusMetric('area')}>Superficie</button>
+                </div>
+              </div>
+
+              {orge.rows.length === 0 ? (
+                <Empty title="Aucune parcelle d'orge pour ces filtres." hint="Changez de saison ou élargissez les filtres." />
+              ) : (
+                <>
+                  <div className="status-card__body">
+                    <div className="status-card__chart">
+                      <ResponsiveContainer width="100%" height={200}>
+                        <PieChart>
+                          <Pie data={pieData} dataKey="value" nameKey="label" innerRadius="64%" outerRadius="96%"
+                            paddingAngle={1.5} startAngle={90} endAngle={-270} stroke="#fff" strokeWidth={2} isAnimationActive={false}>
+                            {pieData.map((d) => <Cell key={d.label} fill={d.color} />)}
+                          </Pie>
+                          <Tooltip formatter={(v: number) => (statusMetric === 'count' ? `${nf(v)} parcelles` : fmtHa(v))} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div className="donut-center">
+                        <b>{statusMetric === 'count' ? nf(orge.count) : nf(orge.area)}</b>
+                        <span>{statusMetric === 'count' ? 'parcelles d’orge' : 'hectares d’orge'}</span>
+                      </div>
+                    </div>
+
+                    <div className="tablewrap">
+                      <table className="status-table">
+                        <thead>
+                          <tr>
+                            <th>Statut</th>
+                            <th className="num">Parcelles</th>
+                            <th className="status-part">Part</th>
+                            <th className="num">Superficie</th>
+                            <th className="status-part">Part</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {statusRows.map((r) => (
+                            <tr key={r.id}>
+                              <td>
+                                <span className="status-name"><i className="status-dot" style={{ background: STATUS_COLOR[r.id] }} />{STATUS_LABEL[r.id]}</span>
+                              </td>
+                              <td className="num"><b>{nf(r.count)}</b></td>
+                              <td className="status-part">
+                                <span className="status-part__bar"><i style={{ width: `${orge.count ? (r.count / orge.count) * 100 : 0}%`, background: STATUS_COLOR[r.id] }} /></span>
+                                <span className="pct">{pct(r.count, orge.count)}</span>
+                              </td>
+                              <td className="num"><b>{fmtHa(r.area)}</b></td>
+                              <td className="status-part">
+                                <span className="status-part__bar"><i style={{ width: `${orge.area ? (r.area / orge.area) * 100 : 0}%`, background: STATUS_COLOR[r.id] }} /></span>
+                                <span className="pct">{pct(r.area, orge.area)}</span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <p className="status-card__foot">
+                    L'orge représente <b>{nf(orge.count)}</b> parcelles sur {nf(orge.scopeCount)} ({pct(orge.count, orge.scopeCount)}) et <b>{fmtHa(orge.area)}</b> sur {fmtHa(orge.scopeArea)} ({pct(orge.area, orge.scopeArea)}) de la superficie analysée.
+                  </p>
+                </>
+              )}
+            </section>
 
             <div className="grid2">
               <section className="card">

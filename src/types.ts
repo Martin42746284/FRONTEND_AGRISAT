@@ -99,6 +99,10 @@ export interface Parcel {
   dataSource?: string;
   /** Culture lue en base ; absent si la parcelle n'a pas (ou plus) de culture. */
   cultureDetail?: CultureDetail;
+  /** Contour importé depuis un fichier KML, quelle que soit la culture. */
+  kmlImported?: boolean;
+  /** Blé ou avoine déclaré dans le KML d'origine : toujours classé « Autre culture ». */
+  kmlCulture?: 'ble' | 'avoine';
   rejected?: boolean;
 }
 

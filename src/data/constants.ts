@@ -42,6 +42,19 @@ export const STATUS_TONE: Record<Status, string> = {
   confirme: 'ok', a_verifier: 'warn',
   non_verifie: 'neutral', verifie_terrain: 'ok', corrige: 'info', incertain: 'warn', obsolete: 'muted',
 };
+/** Couleurs des statuts pour les graphiques (une teinte par niveau de confiance). */
+export const STATUS_COLOR: Record<Status, string> = {
+  confirme: '#2F7D4F',
+  verifie_terrain: '#0F7F86',
+  corrige: '#3A6EDC',
+  a_verifier: '#D99A1E',
+  incertain: '#C4553F',
+  non_verifie: '#8A9199',
+  obsolete: '#B9C0BE',
+};
+export const STATUS_ORDER: Status[] = [
+  'verifie_terrain', 'confirme', 'corrige', 'non_verifie', 'a_verifier', 'incertain', 'obsolete',
+];
 
 export const ANALYSIS_LABEL: Record<AnalysisStatus, string> = {
   en_attente: 'En attente',

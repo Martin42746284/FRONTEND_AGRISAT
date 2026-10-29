@@ -570,7 +570,7 @@ export const useApp = create<State>()(
         const seasonId = s.filters.seasonId;
         const by = s.user?.name ?? 'Inconnu';
         // Toute la fiche suit la classe retenue : sans ces textes, une parcelle
-        // corrigée en « Orge » continuait d'afficher « Non-orge » (verdict,
+        // corrigée en « Orge » continuait d'afficher « Autre culture » (verdict,
         // classe détectée et explication enregistrés par le modèle).
         const text = correctionText(to, note, kind);
         set({
@@ -1258,7 +1258,7 @@ interface MaltoPipelineResult {
  * Pipeline complet reprenant la méthode du frontend Malto :
  *  1) tracé automatique des parcelles — POST /api/zone-parcels (modèle VHR
  *     Delineate Anything JECAM) ;
- *  2) classification orge/non-orge — POST /api/analyze avec `traced_parcels`
+ *  2) classification orge / autre culture — POST /api/analyze avec `traced_parcels`
  *     (classifieur RF Sentinel-2 appliqué aux contours tracés).
  * Les parcelles tracées sont ajoutées au store (déduplication par id) puis
  * classées (culture orge + confiance) lorsque le backend les confirme.
@@ -1311,7 +1311,7 @@ async function runMaltoPipeline(
     patchLog(`Tracé automatique indisponible : ${err instanceof Error ? err.message : String(err)}`, 'warn');
   }
 
-  // 2) Classification orge/non-orge (RF Sentinel-2) des contours tracés
+  // 2) Classification orge / autre culture (RF Sentinel-2) des contours tracés
   // automatiquement ET des parcelles tracées à la main dans le périmètre.
   const current = getState();
   const manualParcels = parcelsForAnalysis(
@@ -1325,7 +1325,7 @@ async function runMaltoPipeline(
   const analysisParcels = [...manualParcels, ...traced].filter((p) => !alreadyAnalyzed.has(p.id));
   const skippedCount = manualParcels.length + traced.length - analysisParcels.length;
   patchLog(
-    `Classification orge/non-orge (RF Sentinel-2) sur ${traced.length} contour(s) automatique(s) `
+    `Classification orge / autre culture (RF Sentinel-2) sur ${traced.length} contour(s) automatique(s) `
     + `et ${manualParcels.length} parcelle(s) tracée(s) manuellement…`,
   );
   if (skippedCount > 0) {

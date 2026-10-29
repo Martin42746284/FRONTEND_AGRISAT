@@ -50,8 +50,10 @@ export interface AnalysisScope {
 export function isAnalyzedParcel(parcel: Parcel): boolean {
   const detail = parcel.cultureDetail;
   if (detail) {
+    // La ligne en base fait foi : une culture seulement *déclarée* (blé, orge…
+    // d'un import KML) n'est pas un résultat d'analyse et reste analysable.
     if (detail.detected && detail.detected.trim()) return true;
-    if (detail.ndvi != null || detail.confidence != null) return true;
+    return detail.ndvi != null || detail.confidence != null;
   }
   return Object.values(parcel.results).some((result) => result.culture !== 'inconnue');
 }
@@ -64,7 +66,7 @@ export function analyzedParcelIds(parcels: Parcel[]): Set<string> {
 /**
  * Catégories affichées pour une analyse de cultures.
  *
- * Le classifieur de parcelle rend un verdict binaire : orge ou non-orge. Les
+ * Le classifieur de parcelle rend un verdict binaire : orge ou autre culture. Les
  * cultures/couvertures enregistrées par d'autres chemins (riz, sol nu, eau…)
  * sont regroupées dans « Autres cultures » afin de conserver ce même niveau de
  * lecture dans l'historique.
@@ -74,7 +76,7 @@ export type CultureCategory = 'orge' | 'autres';
 export interface AnalysisCultureCounts {
   /** Parcelles classées « Orge ». */
   orge: number;
-  /** Parcelles classées « Autres cultures » (non-orge). */
+  /** Parcelles classées « Autres cultures » (tout ce qui n'est pas de l'orge). */
   autres: number;
   /** Parcelles de l'analyse qui portent déjà un résultat cultural. */
   analyzed: number;

@@ -160,7 +160,9 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     setCaptureProgress({ percent: 1, label: 'Préparation de la capture…', done: false });
   };
   const updateCaptureProgress = (step: { percent: number; label: string }) => {
-    setCaptureProgress({ percent: step.percent, label: step.label, done: false });
+    // L'étape vient du backend : on neutralise le nom du moteur d'analyse, comme
+    // partout ailleurs dans l'interface.
+    setCaptureProgress({ percent: step.percent, label: withoutToolName(step.label), done: false });
   };
   const finishCaptureProgress = () => {
     clearProgressDoneTimer();
@@ -745,7 +747,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
               <MapPin size={18} />
             </button>
           )}
-          <button className={`tool ${autoSearchOpen ? 'tool--on' : ''}`} data-tip="Recherche automatique orge / non-orge" aria-label="Ouvrir l’analyse automatique des cultures" aria-expanded={autoSearchOpen} onClick={toggleAutoSearch}><Radar size={18} /></button>
+          <button className={`tool ${autoSearchOpen ? 'tool--on' : ''}`} data-tip="Recherche automatique orge / autre culture" aria-label="Ouvrir l’analyse automatique des cultures" aria-expanded={autoSearchOpen} onClick={toggleAutoSearch}><Radar size={18} /></button>
           <button className={`tool ${geminiOpen ? 'tool--on' : ''}`} data-tip="Capturer le terrain et détecter les parcelles" aria-label="Capturer le terrain et détecter les parcelles" aria-expanded={geminiOpen} onClick={toggleGemini}><Sparkles size={18} /></button>
           {!drawing && !zone && <button className="tool" data-tip="Dessiner une zone d’étude" aria-label="Dessiner une zone d’étude" onClick={startDraw}><PenTool size={18} /></button>}
           {!drawing && <button className="tool" data-tip="Tracer une parcelle manuellement" aria-label="Tracer une parcelle manuellement" onClick={startParcelDraw}><Waypoints size={18} /></button>}
@@ -830,7 +832,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
                 <b>Résultat : {automaticDetection.candidates_found} parcelle(s) · {automaticDetection.analyzed_count} analysée(s)</b>
                 <span className="hint">
                   Orge : {automaticDetection.parcels.filter((candidate) => candidate.analysis?.is_barley === true).length}
-                  {' · '}Non-orge : {automaticDetection.parcels.filter((candidate) => candidate.analysis?.is_barley === false).length}
+                  {' · '}Autre culture : {automaticDetection.parcels.filter((candidate) => candidate.analysis?.is_barley === false).length}
                   {' · '}À vérifier : {automaticDetection.parcels.filter((candidate) => !candidate.analysis || candidate.analysis.is_barley == null).length}
                 </span>
                 {automaticDetection.notice && <p className="hint">{automaticDetection.notice}</p>}
@@ -848,7 +850,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
                       flyTo({ center: [candidate.center.lat, candidate.center.lng], zoom: 17 });
                     }}>
                       <span className={`autosearch__dot ${isBarley ? 'autosearch__dot--barley' : analysis ? 'autosearch__dot--other' : ''}`} />
-                      <span><strong>{label}</strong><small>{analysis?.verdict ?? candidate.analysis_error ?? candidate.tags.source ?? candidate.id}</small></span>
+                      <span><strong>{label}</strong><small>{withoutToolName(analysis?.verdict ?? candidate.analysis_error ?? candidate.tags.source ?? candidate.id)}</small></span>
                       {analysis?.confidence != null && <em>{Math.round(analysis.confidence)}%</em>}
                     </button>
                   );
@@ -1007,12 +1009,12 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
           return (
             <aside className="automatic-parcel-drawer glass" aria-label="Détails de l’analyse de la parcelle">
               <header className="automatic-parcel-drawer__head">
-                <div><h2>{candidate.analysis?.culture_detected ?? 'Parcelle analysée'}</h2><p>{candidate.id} · {candidate.tags.source ?? 'détection automatique'}</p></div>
+                <div><h2>{candidate.analysis?.culture_detected ?? 'Parcelle analysée'}</h2><p>{candidate.id} · {withoutToolName(candidate.tags.source ?? 'détection automatique')}</p></div>
                 <button className="icon-btn" onClick={() => selectAutomaticParcel(null)} aria-label="Fermer les détails"><X size={18} /></button>
               </header>
               <div className="automatic-parcel-drawer__body">
                 {!result ? (
-                  <p className="note note--warn">{candidate.analysis_error ?? 'Aucun résultat d’analyse disponible.'}</p>
+                  <p className="note note--warn">{withoutToolName(candidate.analysis_error ?? 'Aucun résultat d’analyse disponible.')}</p>
                 ) : <>
                   <section className="automatic-parcel-summary">
                     <div className="automatic-parcel-shape" aria-hidden><span /></div>
@@ -1030,7 +1032,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
                     <dl className="automatic-parcel-kv">
                       <dt>Modèle Sentinel-2</dt><dd>{score(result.s2_prob_barley)}</dd>
                       <dt>Modèle RF</dt><dd>{score(result.rf_prob_barley)}</dd>
-                      <dt>Modèle CNN</dt><dd>{result.cnn_available ? `${score(result.cnn_prob_barley)} orge · ${score(result.cnn_prob_non_barley)} non-orge` : 'Indisponible'}</dd>
+                      <dt>Modèle CNN</dt><dd>{result.cnn_available ? `${score(result.cnn_prob_barley)} orge · ${score(result.cnn_prob_non_barley)} autre culture` : 'Indisponible'}</dd>
                       <dt>Score agro</dt><dd>{score(result.agro_score)}</dd>
                       <dt>Score hybride</dt><dd>{score(result.hybrid_score)}</dd>
                     </dl>

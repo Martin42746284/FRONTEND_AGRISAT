@@ -73,17 +73,21 @@ function NdviSpark({ points }: { points: VegetationPoint[] }) {
 
 /** Fiche culture : ce qui est enregistré en base pour la parcelle, avant tout détail de contour. */
 export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors: Record<CultureId, string> }) {
-  const cultureId = mapCulture(detail.detected ?? detail.declared);
+  const detectedLabel = detail.detected?.trim() ?? '';
+  // Une culture seulement déclarée (contour importé, pas encore analysé) ne doit
+  // pas être présentée comme un résultat de classification.
+  const declaredOnly = !detectedLabel && !!detail.declared;
+  const cultureId = mapCulture(detectedLabel || detail.declared);
   // Libellé brut du modèle en pastille : on n'affiche plus l'identique (libellé
   // « Orge » ou identifiant `orge`, `sol_nu`…) ni l'identifiant de la culture
   // retenue, qui apparaissait comme une seconde classe contradictoire.
-  const raw = detail.detected?.trim() ?? '';
+  const raw = detectedLabel;
   const rawDetected = raw && raw !== CULTURE_BY_ID[cultureId].label && raw.toLowerCase() !== cultureId
     ? raw
     : null;
   const scores = [
     { label: 'Orge (CNN)', value: detail.cnnProbBarley },
-    { label: 'Non-orge (CNN)', value: detail.cnnProbNonBarley },
+    { label: 'Autre culture (CNN)', value: detail.cnnProbNonBarley },
     { label: 'Score agro', value: detail.agroScore },
     { label: 'Score hybride', value: detail.hybridScore },
   ].filter((score) => score.value != null);
@@ -91,7 +95,7 @@ export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors
   return (
     <>
       <section aria-label="Culture enregistrée">
-        <h3><Wheat size={13} /> Culture enregistrée</h3>
+        <h3><Wheat size={13} /> {declaredOnly ? 'Culture déclarée' : 'Culture enregistrée'}</h3>
         <div className="culture-line">
           <Swatch color={colors[cultureId]} size={14} />
           <strong>{CULTURE_BY_ID[cultureId].label}</strong>
@@ -99,7 +103,7 @@ export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors
         </div>
         <dl className="kv kv--wide">
           {detail.confidence != null && <><dt>Confiance du modèle</dt><dd>{fmtScore(detail.confidence)}</dd></>}
-          {detail.declared && <><dt>Culture déclarée</dt><dd>{detail.declared}</dd></>}
+          {detail.declared && !declaredOnly && <><dt>Culture déclarée</dt><dd>{detail.declared}</dd></>}
           {detail.seasonLabel && <><dt>Saison / stade</dt><dd>{detail.seasonLabel}</dd></>}
           {detail.source && <><dt>Source</dt><dd>{withoutToolName(detail.source)}</dd></>}
         </dl>
@@ -297,7 +301,7 @@ const launchAllowed = canLaunch !== false;
                   <dt>Saison</dt><dd>{SEASON_BY_ID[r.seasonId]?.label}</dd>
                   <dt>Images utilisées</dt><dd>{fmtDate(r.observedFrom)} → {fmtDate(r.observedTo)}</dd>
                   <dt>Traitée le</dt><dd>{fmtDate(r.processedAt)}</dd>
-                  <dt>Modèle</dt><dd>{r.modelVersion}</dd>
+                  <dt>Modèle</dt><dd>{withoutToolName(r.modelVersion)}</dd>
                   <dt>Analyse</dt><dd>{r.analysisId}</dd>
                   <dt>Détection du contour</dt><dd>{fmtPct(p.detectionConfidence)}</dd>
                 </dl>

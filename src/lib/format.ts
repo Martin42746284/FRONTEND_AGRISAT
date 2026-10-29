@@ -25,15 +25,22 @@ export const normalize = (s: string) => s.normalize('NFD').replace(/[\u0300-\u03
  * reformule de façon neutre avant affichage, sans toucher aux données stockées.
  */
 export function withoutToolName(text: string): string {
+  const SERVICE = 'le service d’analyse d’images';
   return text
     // « modèle image Gemini » et identifiants de modèle (« gemini-2.5-flash »).
     .replace(/\bmodèle image \w*gemini[\w-]*(?:\.[\w-]+)*/gi, 'modèle d’analyse d’images')
-    .replace(/\bDétection Gemini\b/g, 'Détection automatique')
-    .replace(/\bpar Gemini\b/g, 'automatiquement')
-    .replace(/\bParcelle Gemini\b/g, 'Parcelle')
-    .replace(/\bLibellé Gemini\b/g, 'Libellé d’origine')
-    .replace(/\bune clé Gemini\b/g, 'une clé API')
-    .replace(/\bclé Gemini\b/g, 'clé API')
-    .replace(/^Gemini\b/, 'Le service d’analyse')
-    .replace(/\bGemini\b/g, 'le service d’analyse');
+    // Étapes d'analyse envoyées par le backend.
+    .replace(/\banalyse de l[’']image par gemini\b/gi, 'analyse automatique de l’image')
+    .replace(/\banalyse gemini\b/gi, 'analyse de l’image')
+    .replace(/\bimage gemini\b/gi, 'image analysée')
+    .replace(/\bDétection Gemini\b/gi, 'Détection automatique')
+    .replace(/\bpar Gemini\b/gi, 'automatiquement')
+    .replace(/\bParcelle Gemini\b/gi, 'Parcelle')
+    .replace(/\bLibellé Gemini\b/gi, 'Libellé d’origine')
+    .replace(/\bune clé Gemini\b/gi, 'une clé API')
+    .replace(/\bclé Gemini\b/gi, 'clé API')
+    .replace(/\bgemini[\w-]*(?:\.[\w-]+)*/gi, SERVICE)
+    // Le terme neutre prend une majuscule en début de phrase.
+    .replace(/(^|[.!?]\s+)le service d’analyse d’images/g, (_match, prefix: string) => `${prefix}Le service d’analyse d’images`)
+    .replace(/^([a-zà-ÿ])/, (first: string) => first.toUpperCase());
 }

@@ -1,5 +1,8 @@
 import type { Parcel } from '../types';
 
+/** Couleur des contours de référence (détections Gemini, cultures KML forcées). */
+export const GEMINI_OUTLINE_COLOR = '#FF0000';
+
 /**
  * Style cartographique des contours VHR (tracé automatique par le modèle).
  *
