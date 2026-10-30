@@ -1,12 +1,12 @@
 import type { CultureId, Status } from '../types';
 
 /** Score de confiance (0–1) à partir duquel une parcelle d'orge est confirmée. */
-export const BARLEY_CONFIRMATION_THRESHOLD = 0.65;
+export const BARLEY_CONFIRMATION_THRESHOLD = 0.60;
 
 /**
  * Statut d'affichage déduit du score de confiance.
  *
- * Pour l'orge, la règle métier est : « Confirmé » à partir de 65 %, « À
+ * Pour l'orge, la règle métier est : « Confirmé » à partir de 60 %, « À
  * vérifier » en dessous. Les autres cultures conservent le comportement
  * historique du frontend (incertain sous 50 %, puis non vérifié).
  */

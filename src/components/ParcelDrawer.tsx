@@ -60,7 +60,7 @@ function Shape({ p, color }: { p: Parcel; color: string }) {
           points={pts}
           fill={color}
           fillOpacity={0.92}
-          stroke="#0B1F24"
+          stroke="#16231E"
           strokeWidth={2}
           strokeLinejoin="round"
           vectorEffect="non-scaling-stroke"
@@ -84,7 +84,7 @@ function NdviSpark({ points }: { points: VegetationPoint[] }) {
   return (
     <figure className="spark">
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Série NDVI sur ${usable.length} mois`}>
-        <path d={path} fill="none" stroke="#0F7F86" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+        <path d={path} fill="none" stroke="#03793C" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
       </svg>
       <figcaption className="muted-sm">
         {fmtMonth(usable[0].date)} → {fmtMonth(usable[usable.length - 1].date)} · NDVI de{' '}

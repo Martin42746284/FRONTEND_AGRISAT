@@ -245,8 +245,8 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       center: { lat: automaticSearchCenter[0], lng: automaticSearchCenter[1] },
       radius: automaticSearchRadius,
       clickable: false,
-      strokeColor: '#0F7F86', strokeOpacity: 1, strokeWeight: 2,
-      fillColor: '#0F7F86', fillOpacity: 0.08,
+      strokeColor: '#03793C', strokeOpacity: 1, strokeWeight: 2,
+      fillColor: '#03793C', fillOpacity: 0.08,
       zIndex: 45,
     });
     searchRadiusCircle.current = circle;
@@ -270,8 +270,8 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         east: geminiCapture.east,
       },
       clickable: false,
-      strokeColor: '#38BDF8', strokeOpacity: 1, strokeWeight: 2,
-      fillColor: '#38BDF8', fillOpacity: 0.05,
+      strokeColor: '#B60319', strokeOpacity: 1, strokeWeight: 2,
+      fillColor: '#B60319', fillOpacity: 0.05,
       zIndex: 55,
     });
     captureRectangle.current = rectangle;
@@ -281,7 +281,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     };
   }, [map, geminiCapture]);
 
-  // Bornes GPS enregistrées : épingles teal, rose pour celle sélectionnée dans
+  // Bornes GPS enregistrées : épingles vertes, rouges pour celle sélectionnée dans
   // la recherche. La bulle n'est ouverte que pour la borne recherchée.
   useEffect(() => {
     borneMarkers.current.forEach((marker) => marker.setMap(null));
@@ -303,7 +303,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         position: { lat: borne.lat, lng: borne.lng },
         title: `Borne GPS — ${borne.name}`,
         zIndex: selected ? google.maps.Marker.MAX_ZINDEX + 3 : 6000,
-        icon: pinIcon(selected ? '#E11D48' : '#0F7F86', selected ? 2.05 : 1.65),
+        icon: pinIcon(selected ? '#B60319' : '#03793C', selected ? 2.05 : 1.65),
       });
       marker.addListener('click', () => {
         const state = useApp.getState();
@@ -344,7 +344,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       position: { lat: searchedLocation.lat, lng: searchedLocation.lng },
       title: 'Emplacement recherché',
       zIndex: google.maps.Marker.MAX_ZINDEX + 4,
-      icon: pinIcon('#2563EB', 2.1),
+      icon: pinIcon('#B60319', 2.1),
     });
     searchedMarker.current = marker;
 
@@ -369,7 +369,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       position: { lat: borneDraft[0], lng: borneDraft[1] },
       title: 'Nouvelle borne GPS',
       zIndex: google.maps.Marker.MAX_ZINDEX + 5,
-      icon: pinIcon('#E3B505', 2.1),
+      icon: pinIcon('#03793C', 2.1),
     });
     draftBorneMarker.current = marker;
     return () => {
@@ -424,13 +424,13 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       regionLayers.current.push(new google.maps.Polygon({
         map,
         paths: region.outline.map(([lat, lng]) => ({ lat, lng })),
-        strokeColor: '#12262B', strokeOpacity: 0.55, strokeWeight: 1.5,
+        strokeColor: '#16231E', strokeOpacity: 0.55, strokeWeight: 1.5,
         fillOpacity: 0, clickable: false, zIndex: 1,
       }));
     }
     for (const commune of communes) {
       const style = commune.coverage === 'analysee'
-        ? { strokeColor: '#0F7F86', strokeWeight: 1, fillColor: '#0F7F86', fillOpacity: 0.05 }
+        ? { strokeColor: '#03793C', strokeWeight: 1, fillColor: '#03793C', fillOpacity: 0.05 }
         : commune.coverage === 'partielle'
           ? { strokeColor: '#C98A00', strokeWeight: 1.6, fillColor: '#F2B84B', fillOpacity: 0.14 }
           : { strokeColor: '#5B6770', strokeWeight: 1.4, fillColor: '#5B6770', fillOpacity: 0.25 };
@@ -626,7 +626,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       if (!polygon) continue;
       // Parcelle en cours d'édition : jamais masquée par les filtres pendant la modification.
       if (parcel.id === editingParcelId) {
-        polygon.setOptions({ strokeColor: '#0F7F86', strokeOpacity: 1, strokeWeight: 4, fillColor: '#0F7F86', fillOpacity: 0.14, zIndex: 1200 });
+        polygon.setOptions({ strokeColor: '#B60319', strokeOpacity: 1, strokeWeight: 4, fillColor: '#B60319', fillOpacity: 0.14, zIndex: 1200 });
         if (!onMap.current.has(parcel.id)) {
           polygon.setMap(map);
           onMap.current.add(parcel.id);
@@ -710,7 +710,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
 
     const points = start.map(([lat, lng]) => ({ lat, lng }));
     polygon.setPath(points);
-    polygon.setOptions({ strokeColor: '#0F7F86', strokeOpacity: 1, strokeWeight: 4, fillColor: '#0F7F86', fillOpacity: 0.14, zIndex: 1200 });
+    polygon.setOptions({ strokeColor: '#B60319', strokeOpacity: 1, strokeWeight: 4, fillColor: '#B60319', fillOpacity: 0.14, zIndex: 1200 });
     polygon.setMap(map);
     onMap.current.add(editingParcelId);
 
@@ -725,7 +725,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
           path: google.maps.SymbolPath.CIRCLE,
           scale: 7,
           fillColor: '#fff', fillOpacity: 1,
-          strokeColor: '#0F7F86', strokeWeight: 3,
+          strokeColor: '#B60319', strokeWeight: 3,
         },
       });
       marker.addListener('drag', () => {
@@ -787,7 +787,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       draftLine.current = new google.maps.Polyline({
         map,
         path: draft.map(([lat, lng]) => ({ lat, lng })),
-        strokeColor: drawMode === 'parcel' ? '#FFFFFF' : '#0F7F86', strokeOpacity: drawMode === 'parcel' ? 0.96 : 1, strokeWeight: drawMode === 'parcel' ? 2 : 2.5,
+        strokeColor: drawMode === 'parcel' ? '#FFFFFF' : '#B60319', strokeOpacity: drawMode === 'parcel' ? 0.96 : 1, strokeWeight: drawMode === 'parcel' ? 2 : 2.5,
         icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 3 }, offset: '0', repeat: '8px' }],
         clickable: false,
       });
@@ -801,7 +801,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
           path: google.maps.SymbolPath.CIRCLE,
           scale: index === 0 ? 6 : 4,
           fillColor: '#fff', fillOpacity: 1,
-          strokeColor: drawMode === 'parcel' ? '#FFFFFF' : '#0F7F86', strokeWeight: 2,
+          strokeColor: drawMode === 'parcel' ? '#FFFFFF' : '#B60319', strokeWeight: 2,
         },
       }));
     });
@@ -834,8 +834,8 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     const polygon = new google.maps.Polygon({
       map,
       paths: points,
-      strokeColor: '#0F7F86', strokeOpacity: 1, strokeWeight: 2.5,
-      fillColor: '#0F7F86', fillOpacity: 0.06,
+      strokeColor: '#B60319', strokeOpacity: 1, strokeWeight: 2.5,
+      fillColor: '#B60319', fillOpacity: 0.06,
       clickable: false, zIndex: 50,
     });
     zonePolygon.current = polygon;
@@ -848,7 +848,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         icon: {
           path: google.maps.SymbolPath.CIRCLE, scale: 7,
           fillColor: '#fff', fillOpacity: 1,
-          strokeColor: '#0F7F86', strokeWeight: 3,
+          strokeColor: '#B60319', strokeWeight: 3,
         },
       });
       marker.addListener('drag', () => {

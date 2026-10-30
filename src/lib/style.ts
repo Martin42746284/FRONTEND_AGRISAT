@@ -50,6 +50,6 @@ export function computeStyle(r: CropResult, ctx: StyleCtx, selected: boolean): {
     opacity: 0.95,
     dashArray: unknown || uncertain ? '4 3' : obsolete ? '1 4' : undefined,
   };
-  if (selected) Object.assign(options, { color: '#0B1F24', weight: 3.5, fillOpacity: Math.max(fillOpacity, 0.75), dashArray: undefined });
+  if (selected) Object.assign(options, { color: '#16231E', weight: 3.5, fillOpacity: Math.max(fillOpacity, 0.75), dashArray: undefined });
   return { visible: true, options };
 }

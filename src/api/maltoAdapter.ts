@@ -168,7 +168,7 @@ function mapConfidence(p: MaltoParcel): number {
  *
  * Les statuts manuels (vérifié terrain, corrigé, obsolète) restent prioritaires.
  * Pour une parcelle d'orge, le statut suit ensuite la confiance affichée :
- * 65 % ou plus → « Confirmé », moins de 65 % → « À vérifier ».
+ * 60 % ou plus → « Confirmé », moins de 60 % → « À vérifier ».
  */
 function mapStatus(p: MaltoParcel, conf: number, culture: CultureId): Status {
   const v = (p.verdict ?? '').toLowerCase();

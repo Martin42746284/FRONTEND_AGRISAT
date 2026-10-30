@@ -1,7 +1,7 @@
 import type { Parcel } from '../types';
 
 /** Couleur des contours de référence (détections Gemini, cultures KML forcées). */
-export const GEMINI_OUTLINE_COLOR = '#FF0000';
+export const GEMINI_OUTLINE_COLOR = '#B60319';
 
 /**
  * Style cartographique des contours VHR (tracé automatique par le modèle).
@@ -22,7 +22,7 @@ export const GEMINI_OUTLINE_COLOR = '#FF0000';
  *    sur un champ sombre.
  *
  * L'incertitude est marquée par le pointillé (comme pour les cultures), et
- * la sélection par un trait épais orange.
+ * la sélection par un trait épais rouge MALTO.
  */
 export function parcelOutlineStyle(parcel: Parcel, selected = false) {
   const aire = parcel.areaHa;
@@ -33,11 +33,11 @@ export function parcelOutlineStyle(parcel: Parcel, selected = false) {
 
   if (selected) {
     return {
-      strokeColor: '#FF7A00',
+      strokeColor: '#B60319',
       strokeOpacity: 1,
       strokeWeight: 3,
-      fillColor: '#FFB703',
-      fillOpacity: 0.18,
+      fillColor: '#B60319',
+      fillOpacity: 0.16,
     };
   }
 
