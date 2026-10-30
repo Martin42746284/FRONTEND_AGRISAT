@@ -69,15 +69,8 @@ export default function AppShell() {
     <div className={`shell ${onMap ? 'shell--map' : ''}`}>
       <main className="shell__page"><Outlet /></main>
 
-      {onMap && (
-        <div className="brandchip glass">
-          <img src="/remove.png" width="72" height="72" alt="Logo AGRISAT" />
-          <div>
-            <strong>AGRISAT</strong>
-            <span>Agricultural Remote Sensing &amp; Detection</span>
-          </div>
-        </div>
-      )}
+
+      {onMap && <img className="brandchip" src="/malt.png" width={120} height={40} alt="Logo MALTO" />}
 
       <nav className="dock glass" aria-label="Navigation principale">
         {items.map((i) => (

@@ -519,11 +519,45 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .filters__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 6px; } .filters__head h2 { margin: 0 auto 0 0; font-size: 16px; }
 .filters--float { position: absolute; z-index: 850; top: 72px; left: 92px; width: 320px; max-height: calc(100% - 140px); overflow: auto; padding: 12px 16px 20px; }
 
-.brandchip { position: fixed; z-index: 900; top: 12px; left: 12px; min-height: 78px; display: flex; align-items: center; gap: 10px; padding: 6px 14px 6px 8px; }
-.brandchip img { display: block; width: 50px; height: 64px; flex: none; object-fit: contain; object-position: center; }
-.brandchip strong { display: block; font-size: 18px; line-height: 1.15; letter-spacing: .04em; } .brandchip span { display: block; max-width: 260px; font-size: 12px; line-height: 1.3; color: var(--ink-3); }
+/* Logo MALTO : image panoramique (865 × 289) posée sur un fond verre flouté.
+   Hauteur fixe, largeur au rapport de l'image (aucune déformation).
+   Entrée en fondu avec léger rebond, halo qui respire, flottement lent, et
+   survol qui décolle le bloc (propriétés `translate`/`scale`, distinctes du
+   `transform` animé, pour que les deux se cumulent).
+   (Animations coupées par la règle `prefers-reduced-motion` plus bas.) */
+.brandchip {
+  position: fixed; z-index: 900; top: 12px; left: 12px;
+  display: block; width: auto; height: 100px;
+  padding: 10px 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, .6);
+  background: rgba(250, 252, 251, .42);
+  -webkit-backdrop-filter: blur(5px) saturate(1.15);
+  backdrop-filter: blur(5px) saturate(1.15);
+  box-shadow: 0 10px 28px rgba(18, 38, 43, .16);
+  transform-origin: left center;
+  animation:
+    brandchip-in .7s cubic-bezier(.22, .9, .26, 1.25) both,
+    brandchip-halo 9s ease-in-out .7s infinite,
+    brandchip-float 7.5s ease-in-out .7s infinite;
+  transition: translate .25s ease, scale .25s ease, background .25s ease;
+}
+.brandchip:hover { translate: 0 -3px; scale: 1.015; background: rgba(250, 252, 251, .6); }
+@keyframes brandchip-in {
+  0% { opacity: 0; transform: translateY(-10px) scale(.92); }
+  60% { opacity: 1; transform: translateY(2px) scale(1.03); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes brandchip-halo {
+  0%, 100% { box-shadow: 0 10px 28px rgba(18, 38, 43, .16); }
+  50% { box-shadow: 0 15px 34px rgba(18, 38, 43, .26); }
+}
+@keyframes brandchip-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
 .dock { position: fixed; z-index: 900; top: 72px; left: 12px; width: 68px; max-height: calc(100dvh - 120px); overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-.shell--map .dock { top: 98px; }
+.shell--map .dock { top: 122px; }
 .dock__item { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 2px; border-radius: 10px; font-size: 10.5px; line-height: 1.1; text-align: center; color: var(--ink-2); text-decoration: none; font-weight: 550; }
 .dock__item:hover { background: rgba(18,38,43,.07); } .dock__item.is-active { background: var(--ink); color: #fff; }
 .topright { position: fixed; z-index: 950; top: 12px; right: 12px; display: flex; gap: 8px; align-items: center; }
@@ -855,11 +889,9 @@ body[data-drawer="open"] .maptools--autosearch.maptools--search .searchpop {
 .menu__list.glass { z-index: 1100; }
 
 @media (max-width: 1180px) {
-  .brandchip { width: 68px; min-height: 68px; padding: 3px 6px; }
-  .brandchip img { width: 48px; height: 60px; }
-  .brandchip div { display: none; }
-  .parambar { top: 12px; left: 92px; right: 260px; transform: none; width: auto; min-width: 0; }
-  body[data-drawer="open"] .parambar { top: 12px; left: 92px; right: calc(var(--drawer) + 100px); }
+  .brandchip { height: 84px; }
+  .parambar { top: 12px; left: 252px; right: 260px; transform: none; width: auto; min-width: 0; }
+  body[data-drawer="open"] .parambar { top: 12px; left: 252px; right: calc(var(--drawer) + 100px); }
   body[data-filters="open"] .parambar { left: 424px; right: 320px; }
   body[data-drawer="open"][data-filters="open"] .parambar { right: max(320px, calc(var(--drawer) + 100px)); }
   .maptools { top: auto; bottom: 120px; }
@@ -870,7 +902,7 @@ body[data-drawer="open"] .maptools--autosearch.maptools--search .searchpop {
 }
 @media (max-width: 760px) {
   :root { --drawer: 100vw; }
-  .brandchip { min-height: 68px; padding: 3px 6px; } .brandchip img { width: 48px; height: 60px; } .brandchip div { display: none; }
+  .brandchip { height: 68px; padding: 6px 12px; border-radius: 18px; }
   .fab span { display: none; } .fab { padding: 0 14px; } .fab .fab__count { position: absolute; margin: -30px -20px 0 0; }
   .dock { top: auto; bottom: 10px; left: 50%; transform: translateX(-50%); width: auto; flex-direction: row; max-width: calc(100% - 20px); overflow-x: auto; }
   .shell--map .dock { top: auto; }

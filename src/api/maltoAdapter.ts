@@ -222,10 +222,15 @@ const EMPTY_CULTURE_LABELS = new Set(['', 'inconnue', 'inconnu', 'unknown', 'non
  *
  * Un simple tracé manuel (`culture_declared = « Inconnue »`, aucun indice) n'a pas
  * de culture : cliquer dessus doit montrer la parcelle, pas une fiche culture vide.
+ *
+ * Un contour importé d'un fichier KML n'a pas non plus de culture : la culture
+ * lisible dans le nom du repère n'est pas un résultat et n'est donc jamais
+ * affichée avant l'analyse. Le blé et l'avoine sont seulement mémorisés dans
+ * `notes` ; leur fiche apparaîtra quand l'analyse les classera « Autre culture ».
  */
 export function mapCultureDetail(p: MaltoParcel): CultureDetail | undefined {
-  const declared = p.culture_declared?.trim() || null;
   const detected = p.culture_detected?.trim() || null;
+  const declared = kmlImportedFrom(p) ? null : p.culture_declared?.trim() || null;
   const declaredCulture = declared && !EMPTY_CULTURE_LABELS.has(declared.toLowerCase()) ? declared : null;
   // Un tracé manuel porte un verdict de contour (« à vérifier sur le terrain »)
   // mais aucun résultat de culture : le verdict seul n'en fait pas une culture.
