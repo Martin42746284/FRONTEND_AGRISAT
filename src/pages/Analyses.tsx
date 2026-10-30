@@ -1,23 +1,45 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, RotateCcw, Check, CircleDot, Circle, MapPin, Trash2, ScanSearch, Loader2 } from 'lucide-react';
+import {
+  Activity, AlertTriangle, CalendarDays, Check, CheckCircle2, Circle, CircleDot,
+  ClipboardList, Clock3, Loader2, MapPin, Plus, RotateCcw, ScanSearch, Trash2, UserRound,
+} from 'lucide-react';
 import { useApp } from '../store/useApp';
 import type { Analysis, AnalysisParcel } from '../types';
 import { PIPELINE_STEPS, ROLES, SEASON_BY_ID } from '../data/constants';
 import { fmtDate, fmtHa, fmtInt, withoutToolName } from '../lib/format';
 import { cultureCountsForAnalysis, type AnalysisCultureCounts } from '../lib/analysis-parcels';
-import { AnalysisBadge, Empty, Modal } from '../components/ui';
+import { AnalysisBadge, Modal } from '../components/ui';
 import NewAnalysisModal from '../components/NewAnalysisModal';
 
 /** Nombre de parcelles analysées par catégorie, pour une entrée d'historique. */
-function CultureCounts({ counts }: { counts: AnalysisCultureCounts }) {
+function CultureCounts({ counts, variant = 'inline' }: {
+  counts: AnalysisCultureCounts;
+  variant?: 'inline' | 'detail';
+}) {
+  const colors = useApp((s) => s.colors);
   const plural = (count: number) => count === 1 ? 'parcelle' : 'parcelles';
   return (
-    <div className="an-cultures">
-      <span>Orge : <b>{counts.orge}</b> {plural(counts.orge)}</span>
-      <span>Autres cultures : <b>{counts.autres}</b> {plural(counts.autres)}</span>
+    <div className={`an-cultures ${variant === 'detail' ? 'an-cultures--detail' : ''}`}>
+      <span className="an-culture">
+        <i className="an-culture__dot" style={{ background: colors.orge }} />
+        <span className="an-culture__label">Orge</span>
+        <b className="an-culture__count">{fmtInt(counts.orge)}</b>
+        <span className="an-culture__unit">{plural(counts.orge)}</span>
+      </span>
+      <span className="an-culture">
+        <i className="an-culture__dot" style={{ background: colors.autre }} />
+        <span className="an-culture__label">Autres cultures</span>
+        <b className="an-culture__count">{fmtInt(counts.autres)}</b>
+        <span className="an-culture__unit">{plural(counts.autres)}</span>
+      </span>
       {counts.pending > 0 && (
-        <small>{counts.analyzed}/{counts.total} parcelle(s) analysée(s)</small>
+        <span className="an-culture an-culture--pending">
+          <i className="an-culture__dot" />
+          <span className="an-culture__label">À traiter</span>
+          <b className="an-culture__count">{fmtInt(counts.pending)}</b>
+          <span className="an-culture__unit">sur {fmtInt(counts.total)}</span>
+        </span>
       )}
     </div>
   );
@@ -63,6 +85,13 @@ export default function Analyses() {
   const currentCounts = current ? cultureCounts.get(current.id) : undefined;
   const currentCultureRunning = current ? cultureJob?.analysisId === current.id : false;
 
+  const running = counts.en_cours ?? 0;
+  const waiting = counts.en_attente ?? 0;
+  const finished = (counts.terminee ?? 0) + (counts.terminee_avertissements ?? 0);
+  const warningCount = counts.terminee_avertissements ?? 0;
+  const failures = counts.echec ?? 0;
+  const followedParcels = analyses.reduce((sum, a) => sum + (a.parcelCount ?? a.detected?.length ?? 0), 0);
+
   /** Ouvre la carte sur la zone analysée (ou sur une parcelle détectée). */
   const showOnMap = (analysis: Analysis, parcel?: AnalysisParcel) => {
     const zone = analysis.zone;
@@ -81,24 +110,81 @@ export default function Analyses() {
   return (
     <div className="page page--single">
       <div className="content content--wide">
-        <div className="content__head">
+        <header className="an-hero">
           <div>
+            <span className="an-hero__eyebrow"><ClipboardList size={14} /> Suivi des traitements</span>
             <h1>Analyses</h1>
-            <p className="muted">{counts.en_cours ?? 0} en cours · {counts.en_attente ?? 0} en attente · {counts.echec ?? 0} en échec</p>
+            <p className="an-hero__sub">
+              Pilotez vos analyses de terrain, suivez leur avancement et consultez les résultats culturaux.
+            </p>
           </div>
-          {can.launch && <button className="btn btn--primary" onClick={() => setCreating(true)}><Plus size={14} /> Nouvelle analyse</button>}
-        </div>
+          {can.launch && (
+            <button className="btn an-hero__cta" onClick={() => setCreating(true)}>
+              <Plus size={15} /> Nouvelle analyse
+            </button>
+          )}
+        </header>
 
         {analyses.length === 0 ? (
-          <Empty
-            title="Aucune analyse enregistrée"
-            hint="Lancez une détection de parcelles depuis la carte : la capture, les parcelles détectées et la zone analysée seront consignées ici."
-          />
+          <div className="an-empty">
+            <span className="an-empty__icon"><ClipboardList size={26} /></span>
+            <strong>Aucune analyse enregistrée</strong>
+            <p>
+              Lancez une détection de parcelles depuis la carte : la capture, les parcelles détectées
+              et la zone analysée seront consignées ici.
+            </p>
+          </div>
         ) : (
-          <div className="tablewrap tablewrap--page">
-            <table className="table table--rows">
-              <thead><tr><th>Analyse</th><th>Périmètre</th><th>Saison</th><th>Statut</th><th>Cultures</th><th>Avancement</th><th>Créée par</th><th>Date</th><th /></tr></thead>
-              <tbody>
+          <>
+            <section className="an-kpis" aria-label="Synthèse des analyses">
+              <article className="an-kpi an-kpi--total">
+                <span className="an-kpi__icon"><ClipboardList size={19} /></span>
+                <div className="an-kpi__body">
+                  <span className="an-kpi__label">Analyses</span>
+                  <b className="an-kpi__value">{fmtInt(analyses.length)}</b>
+                  <span className="an-kpi__hint">{fmtInt(followedParcels)} parcelles suivies</span>
+                </div>
+              </article>
+              <article className="an-kpi an-kpi--info">
+                <span className="an-kpi__icon"><Activity size={19} /></span>
+                <div className="an-kpi__body">
+                  <span className="an-kpi__label">En cours</span>
+                  <b className="an-kpi__value">{fmtInt(running)}</b>
+                  <span className="an-kpi__hint">{waiting ? `${fmtInt(waiting)} en attente` : 'Aucune file d’attente'}</span>
+                </div>
+              </article>
+              <article className="an-kpi an-kpi--ok">
+                <span className="an-kpi__icon"><CheckCircle2 size={19} /></span>
+                <div className="an-kpi__body">
+                  <span className="an-kpi__label">Terminées</span>
+                  <b className="an-kpi__value">{fmtInt(finished)}</b>
+                  <span className="an-kpi__hint">
+                    {warningCount ? `${fmtInt(warningCount)} avec avertissement${warningCount > 1 ? 's' : ''}` : 'Sans avertissement'}
+                  </span>
+                </div>
+              </article>
+              <article className="an-kpi an-kpi--danger">
+                <span className="an-kpi__icon"><AlertTriangle size={19} /></span>
+                <div className="an-kpi__body">
+                  <span className="an-kpi__label">Échecs</span>
+                  <b className="an-kpi__value">{fmtInt(failures)}</b>
+                  <span className="an-kpi__hint">{failures ? 'Traitement en échec' : 'Aucun incident'}</span>
+                </div>
+              </article>
+            </section>
+
+            <section className="an-panel">
+              <div className="an-panel__head">
+                <div>
+                  <h2>Historique des analyses</h2>
+                  <p className="hint">Cliquez sur une analyse pour ouvrir sa fiche détaillée.</p>
+                </div>
+                <span className="an-panel__count">
+                  {fmtInt(analyses.length)} analyse{analyses.length > 1 ? 's' : ''}
+                </span>
+              </div>
+
+              <ul className="an-list">
                 {analyses.map((a) => {
                   const rowCounts = cultureCounts.get(a.id);
                   const cultureRunning = cultureJob?.analysisId === a.id;
@@ -106,55 +192,88 @@ export default function Analyses() {
                   // les parcelles détectées sur l'image du terrain.
                   const analysisLabel = a.zone ? 'Analyser toutes les parcelles détectées' : 'Analyser les cultures';
                   return (
-                    <tr key={a.id} onClick={() => setOpen(a.id)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setOpen(a.id)}>
-                      <td>
-                        <div className="an-id">
-                          {a.captureDataUrl && <img className="an-thumb" src={a.captureDataUrl} alt="" loading="lazy" />}
-                          <span><b>{a.id}</b>{a.cached && <span className="tag">cache</span>}</span>
+                    <li
+                      key={a.id}
+                      className="an-row"
+                      onClick={() => setOpen(a.id)}
+                      tabIndex={0}
+                      onKeyDown={(e) => e.key === 'Enter' && setOpen(a.id)}
+                      aria-label={`Ouvrir l'analyse ${a.id}`}
+                    >
+                      <div className={`an-row__thumb ${a.captureDataUrl ? '' : 'an-row__thumb--empty'}`}>
+                        {a.captureDataUrl
+                          ? <img src={a.captureDataUrl} alt="" loading="lazy" />
+                          : <ScanSearch size={22} />}
+                      </div>
+
+                      <div className="an-row__main">
+                        <div className="an-row__title">
+                          <span className="an-row__id">{a.id}</span>
+                          {a.cached && <span className="tag">cache</span>}
+                          <AnalysisBadge status={a.status} />
                         </div>
-                      </td>
-                      <td>{withoutToolName(a.zoneLabel)}</td>
-                      <td>{SEASON_BY_ID[a.seasonId]?.short}</td>
-                      <td><AnalysisBadge status={a.status} /></td>
-                      <td>{rowCounts && <CultureCounts counts={rowCounts} />}</td>
-                      <td className="conf-cell"><div className="conf"><div className="conf__fill" style={{ width: `${a.progress}%` }} /></div><span>{a.progress} %</span></td>
-                      <td>{a.createdBy}</td>
-                      <td>{fmtDate(a.createdAt, true)}</td>
-                      <td>
-                        <div className="an-actions">
-                          {can.launch && (
-                            <button
-                              className="btn btn--sm"
-                              onClick={(e) => { e.stopPropagation(); analyzeCultures(a.id); }}
-                              disabled={!a.detected?.length || (!!cultureJob && !cultureRunning)}
-                              title={!a.detected?.length ? 'Aucune parcelle détectée dans cette analyse' : undefined}
+                        <div className="an-row__meta">
+                          <span className="an-row__zone"><MapPin size={13} /> {withoutToolName(a.zoneLabel || '—')}</span>
+                          <span><CalendarDays size={13} /> {SEASON_BY_ID[a.seasonId]?.short ?? '—'}</span>
+                          <span><UserRound size={13} /> {a.createdBy}</span>
+                          <span><Clock3 size={13} /> {fmtDate(a.createdAt, true)}</span>
+                        </div>
+                        <div className="an-row__lower">
+                          {rowCounts && <CultureCounts counts={rowCounts} />}
+                          <div className="an-row__progress">
+                            <div
+                              className="an-progress"
+                              data-status={a.status}
+                              role="progressbar"
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={a.progress}
                             >
-                              {cultureRunning
-                                ? <><Loader2 size={13} className="capture-progress__spin" /> Analyse {cultureJob?.done ?? 0}/{cultureJob?.total ?? 0}</>
-                                : <><ScanSearch size={13} /> {analysisLabel}</>}
-                            </button>
-                          )}
-                          {a.zone && (
-                            <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}><MapPin size={13} /> Voir la carte</button>
-                          )}
-                          {a.status === 'echec' && can.launch && (
-                            <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); setConfirm(a.id); }}><RotateCcw size={13} /> Relancer</button>
-                          )}
-                          {can.correct && (
-                            <button
-                              className="btn btn--sm btn--danger"
-                              onClick={(e) => { e.stopPropagation(); setDeleting(a.id); }}
-                              aria-label={`Supprimer l'analyse ${a.id}`}
-                            ><Trash2 size={13} /> Supprimer</button>
-                          )}
+                              <span style={{ width: `${Math.max(0, Math.min(100, a.progress))}%` }} />
+                            </div>
+                            <span className="an-row__progress-value">{a.progress} %</span>
+                          </div>
                         </div>
-                      </td>
-                    </tr>
+                      </div>
+
+                      <div className="an-row__actions">
+                        {can.launch && (
+                          <button
+                            className="btn btn--sm btn--soft"
+                            onClick={(e) => { e.stopPropagation(); analyzeCultures(a.id); }}
+                            disabled={!a.detected?.length || (!!cultureJob && !cultureRunning)}
+                            title={!a.detected?.length ? 'Aucune parcelle détectée dans cette analyse' : analysisLabel}
+                          >
+                            {cultureRunning
+                              ? <><Loader2 size={13} className="capture-progress__spin" /> Analyse {cultureJob?.done ?? 0}/{cultureJob?.total ?? 0}</>
+                              : <><ScanSearch size={13} /> {a.zone ? 'Analyser tout' : 'Analyser les cultures'}</>}
+                          </button>
+                        )}
+                        {a.zone && (
+                          <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}>
+                            <MapPin size={13} /> Carte
+                          </button>
+                        )}
+                        {a.status === 'echec' && can.launch && (
+                          <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); setConfirm(a.id); }}>
+                            <RotateCcw size={13} /> Relancer
+                          </button>
+                        )}
+                        {can.correct && (
+                          <button
+                            className="btn btn--sm btn--danger btn--icon"
+                            onClick={(e) => { e.stopPropagation(); setDeleting(a.id); }}
+                            title="Supprimer l’analyse"
+                            aria-label={`Supprimer l'analyse ${a.id}`}
+                          ><Trash2 size={13} /></button>
+                        )}
+                      </div>
+                    </li>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
+              </ul>
+            </section>
+          </>
         )}
       </div>
 
@@ -162,16 +281,18 @@ export default function Analyses() {
         <Modal
           title={`Analyse ${current.id}`}
           onClose={() => setOpen(null)}
-          width={640}
+          width={760}
           footer={current.zone ? (
-            <>
-              <button className="btn btn--ghost" onClick={() => setOpen(null)}>Fermer</button>
+            <div className="an-modal-actions">
               {can.correct && (
-                <button className="btn btn--danger" onClick={() => setDeleting(current.id)}><Trash2 size={14} /> Supprimer</button>
+                <button className="btn btn--danger an-modal-actions__delete" onClick={() => setDeleting(current.id)}>
+                  <Trash2 size={14} /> Supprimer
+                </button>
               )}
+              <button className="btn btn--ghost" onClick={() => setOpen(null)}>Fermer</button>
               {can.launch && (
                 <button
-                  className="btn"
+                  className="btn btn--soft"
                   onClick={() => analyzeCultures(current.id)}
                   disabled={!current.detected?.length || (!!cultureJob && !currentCultureRunning)}
                 >
@@ -181,69 +302,197 @@ export default function Analyses() {
                 </button>
               )}
               <button className="btn btn--primary" onClick={() => showOnMap(current)}><MapPin size={14} /> Voir la carte</button>
-            </>
+            </div>
           ) : undefined}
         >
-          <div className="an-head">
-            <AnalysisBadge status={current.status} />
-            <span>{withoutToolName(current.zoneLabel)} · {SEASON_BY_ID[current.seasonId]?.label}</span>
-          </div>
-          {currentCounts && <CultureCounts counts={currentCounts} />}
-          {current.error && <p className="note note--danger">{withoutToolName(current.error)}</p>}
-          {current.warnings.map((w, i) => <p key={i} className="note note--warn">{withoutToolName(w)}</p>)}
-          {current.captureDataUrl && (
-            <img className="an-capture" src={current.captureDataUrl} alt="Capture satellite de la zone analysée" />
-          )}
-          <dl className="kv kv--wide">
-            {current.zone && (
-              <>
-                <dt>Zone analysée</dt>
-                <dd>{current.zone.center[0].toFixed(5)}, {current.zone.center[1].toFixed(5)}</dd>
-                <dt>Étendue</dt>
-                <dd>{current.zone.spanM ? `${Math.round(current.zone.spanM)} m · zoom ${current.zone.zoom}` : '—'}</dd>
-              </>
+          <div className="an-detail">
+            <section className={`an-detail__hero ${current.captureDataUrl ? '' : 'an-detail__hero--plain'}`}>
+              <div className="an-detail__hero-copy">
+                <span className="an-detail__eyebrow"><ScanSearch size={14} /> Analyse de terrain</span>
+                <h3>{withoutToolName(current.zoneLabel || '—')}</h3>
+                <p className="an-detail__sub">
+                  {SEASON_BY_ID[current.seasonId]?.label ?? '—'} · {fmtDate(current.createdAt, true)}
+                </p>
+                <div className="an-detail__tags">
+                  <AnalysisBadge status={current.status} />
+                  {current.cached && <span className="tag">cache</span>}
+                  <span className="an-detail__tag"><UserRound size={13} /> {current.createdBy}</span>
+                </div>
+              </div>
+              {current.captureDataUrl && (
+                <img
+                  className="an-detail__capture"
+                  src={current.captureDataUrl}
+                  alt="Capture satellite de la zone analysée"
+                />
+              )}
+            </section>
+
+            <div className="an-detail__stats">
+              <div className="an-stat">
+                <span>Parcelles détectées</span>
+                <b>{current.parcelCount !== undefined ? fmtInt(current.parcelCount) : (current.detected?.length ? fmtInt(current.detected.length) : '—')}</b>
+              </div>
+              <div className="an-stat">
+                <span>Superficie analysée</span>
+                <b>{current.areaHa !== undefined ? fmtHa(current.areaHa) : '—'}</b>
+              </div>
+              <div className="an-stat">
+                <span>Avancement</span>
+                <b>{current.progress} %</b>
+                <div className="an-progress" data-status={current.status}>
+                  <span style={{ width: `${Math.max(0, Math.min(100, current.progress))}%` }} />
+                </div>
+              </div>
+              <div className="an-stat">
+                <span>Saison</span>
+                <b className="an-stat__text">{SEASON_BY_ID[current.seasonId]?.short ?? '—'}</b>
+              </div>
+            </div>
+
+            {current.error && (
+              <div className="an-alert">
+                <AlertTriangle size={16} />
+                <p>{withoutToolName(current.error)}</p>
+              </div>
             )}
-            <dt>Version du pipeline</dt><dd>{withoutToolName(current.pipelineVersion)}</dd>
-            <dt>Scènes utilisées</dt><dd>{current.scenes || '—'}</dd>
-            <dt>Résultat</dt><dd>{current.parcelCount !== undefined ? `${fmtInt(current.parcelCount)} parcelles · ${fmtHa(current.areaHa ?? 0)}` : '—'}</dd>
-            <dt>Début → fin</dt><dd>{fmtDate(current.startedAt, true)} → {fmtDate(current.finishedAt, true)}</dd>
-          </dl>
-          {current.detected?.length ? (
-            <>
-              <h3>Parcelles détectées</h3>
-              <ul className="an-parcels">
-                {current.detected.map((p) => (
-                  <li key={p.id}>
-                    <span><b>{withoutToolName(p.label)}</b><small>{fmtHa(p.areaHa)}</small></span>
-                    <button className="btn btn--sm" onClick={() => showOnMap(current, p)}><MapPin size={13} /> Voir sur la carte</button>
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : null}
-          {!current.zone && (
-            <>
-              <h3>Étapes du pipeline</h3>
-              <ol className="steps">
-                {PIPELINE_STEPS.map((s, i) => {
-                  const done = current.progress >= ((i + 1) / PIPELINE_STEPS.length) * 100 - 0.01;
-                  const active = !done && current.status === 'en_cours' && current.progress >= (i / PIPELINE_STEPS.length) * 100;
-                  const failed = current.status === 'echec' && !done && current.progress >= (i / PIPELINE_STEPS.length) * 100;
-                  return (
-                    <li key={s} className={done ? 'is-done' : active ? 'is-active' : failed ? 'is-failed' : ''}>
-                      {done ? <Check size={14} /> : active || failed ? <CircleDot size={14} /> : <Circle size={14} />}{s}
-                    </li>
-                  );
-                })}
-              </ol>
-            </>
-          )}
-          <h3>Journal</h3>
-          <div className="logs">
-            {current.logs.length === 0 && <span className="muted">Aucun message pour l'instant.</span>}
-            {current.logs.map((l, i) => (
-              <div key={i} className={`log log--${l.level}`}><time>{new Date(l.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</time>{withoutToolName(l.msg)}</div>
+            {current.warnings.map((w, i) => (
+              <div key={i} className="an-alert an-alert--warn">
+                <AlertTriangle size={16} />
+                <p>{withoutToolName(w)}</p>
+              </div>
             ))}
+
+            {currentCounts && (
+              <section className="an-section">
+                <div className="an-section__head">
+                  <div>
+                    <h3>Résultats culturaux</h3>
+                    <p className="hint">
+                      {currentCounts.total
+                        ? `${fmtInt(currentCounts.analyzed)} sur ${fmtInt(currentCounts.total)} parcelles analysées.`
+                        : 'Aucune parcelle associée à cette analyse.'}
+                    </p>
+                  </div>
+                  <span className={`an-section__pill ${currentCounts.pending ? 'is-warn' : currentCounts.total ? 'is-ok' : ''}`}>
+                    {currentCounts.total === 0
+                      ? 'Aucune parcelle'
+                      : currentCounts.pending
+                        ? `${fmtInt(currentCounts.pending)} à traiter`
+                        : 'Complet'}
+                  </span>
+                </div>
+                <CultureCounts counts={currentCounts} variant="detail" />
+                {currentCounts.total > 0 && (
+                  <div className="an-result__progress">
+                    <div className="an-progress" data-status={currentCounts.pending ? 'en_cours' : 'terminee'}>
+                      <span style={{ width: `${(currentCounts.analyzed / currentCounts.total) * 100}%` }} />
+                    </div>
+                    <span>{fmtInt(currentCounts.analyzed)}/{fmtInt(currentCounts.total)} analysées</span>
+                  </div>
+                )}
+              </section>
+            )}
+
+            <section className="an-section">
+              <div className="an-section__head">
+                <h3>Informations de l’analyse</h3>
+              </div>
+              <dl className="an-info__grid">
+                {current.zone && (
+                  <>
+                    <div>
+                      <dt>Zone analysée</dt>
+                      <dd>{current.zone.center[0].toFixed(5)}, {current.zone.center[1].toFixed(5)}</dd>
+                    </div>
+                    <div>
+                      <dt>Étendue</dt>
+                      <dd>{current.zone.spanM ? `${Math.round(current.zone.spanM)} m · zoom ${current.zone.zoom}` : '—'}</dd>
+                    </div>
+                  </>
+                )}
+                <div>
+                  <dt>Version du pipeline</dt>
+                  <dd>{withoutToolName(current.pipelineVersion)}</dd>
+                </div>
+                <div>
+                  <dt>Scènes utilisées</dt>
+                  <dd>{current.scenes || '—'}</dd>
+                </div>
+                <div>
+                  <dt>Résultat</dt>
+                  <dd>{current.parcelCount !== undefined ? `${fmtInt(current.parcelCount)} parcelles · ${fmtHa(current.areaHa ?? 0)}` : '—'}</dd>
+                </div>
+                <div>
+                  <dt>Début → fin</dt>
+                  <dd>{fmtDate(current.startedAt, true)} → {fmtDate(current.finishedAt, true)}</dd>
+                </div>
+              </dl>
+            </section>
+
+            {current.detected?.length ? (
+              <section className="an-section">
+                <div className="an-section__head">
+                  <div>
+                    <h3>Parcelles détectées</h3>
+                    <p className="hint">Ouvrez une parcelle directement sur la carte.</p>
+                  </div>
+                  <span className="an-section__pill">{fmtInt(current.detected.length)}</span>
+                </div>
+                <ul className="an-parcels">
+                  {current.detected.map((p) => (
+                    <li key={p.id}>
+                      <span><b>{withoutToolName(p.label)}</b><small>{fmtHa(p.areaHa)}</small></span>
+                      <button className="btn btn--sm btn--soft" onClick={() => showOnMap(current, p)}>
+                        <MapPin size={13} /> Voir sur la carte
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+
+            {!current.zone && (
+              <section className="an-section">
+                <div className="an-section__head">
+                  <h3>Étapes du pipeline</h3>
+                </div>
+                <ol className="an-steps">
+                  {PIPELINE_STEPS.map((s, i) => {
+                    const done = current.progress >= ((i + 1) / PIPELINE_STEPS.length) * 100 - 0.01;
+                    const active = !done && current.status === 'en_cours' && current.progress >= (i / PIPELINE_STEPS.length) * 100;
+                    const failed = current.status === 'echec' && !done && current.progress >= (i / PIPELINE_STEPS.length) * 100;
+                    return (
+                      <li key={s} className={done ? 'is-done' : active ? 'is-active' : failed ? 'is-failed' : ''}>
+                        <span className="an-step__marker">
+                          {done ? <Check size={14} /> : active || failed ? <CircleDot size={14} /> : <Circle size={14} />}
+                        </span>
+                        <span className="an-step__label">{s}</span>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </section>
+            )}
+
+            <section className="an-section">
+              <div className="an-section__head">
+                <div>
+                  <h3>Journal</h3>
+                  <p className="hint">Messages et événements du traitement.</p>
+                </div>
+                <span className="an-section__pill">{fmtInt(current.logs.length)}</span>
+              </div>
+              <div className="logs an-logs">
+                {current.logs.length === 0 && <span className="muted">Aucun message pour l’instant.</span>}
+                {current.logs.map((l, i) => (
+                  <div key={i} className={`log log--${l.level}`}>
+                    <time>{new Date(l.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</time>
+                    {withoutToolName(l.msg)}
+                  </div>
+                ))}
+              </div>
+            </section>
           </div>
         </Modal>
       )}

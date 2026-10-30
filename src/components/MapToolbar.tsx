@@ -6,9 +6,15 @@ import { bboxOf, centroidOf, M_PER_DEG_LAT, mPerDegLng, ringAreaHa } from '../li
 import { normalize, withoutToolName } from '../lib/format';
 import { parseCoordinates } from '../lib/coordinates';
 import CaptureProgressOverlay, { type CaptureProgressView } from './CaptureProgressOverlay';
-import { api, type AutomaticDetectionResult, type GeminiParcelsPayload } from '../api/services';
+import {
+  api,
+  type AutomaticDetectionParcel,
+  type AutomaticDetectionResult,
+  type GeminiParcelsPayload,
+} from '../api/services';
 import { maltoToFrontend, type MaltoParcel } from '../api/maltoAdapter';
 import { parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
+import { candidateCulture, parcelForCandidate, parcelShowsCandidateCulture } from '../lib/candidate-parcel';
 import { runBatchesWithRetry } from '../lib/detect-queue';
 import type { AnalysisParcel } from '../types';
 
@@ -37,6 +43,21 @@ const DETECT_MAX_IN_FLIGHT = 2;
 
 /** Tentatives par lot : un échec réseau ou un délai dépassé ne doit pas arrêter l'analyse. */
 const DETECT_BATCH_ATTEMPTS = 2;
+
+/** Culture affichée pour un résultat automatique, selon le code couleur de l'application. */
+function automaticCulture(candidate: AutomaticDetectionParcel): {
+  id: 'orge' | 'autre' | 'inconnue';
+  label: string;
+} {
+  const id = candidateCulture(candidate);
+  if (id === 'orge') return { id, label: 'Orge' };
+  if (id === 'autre') return { id, label: 'Autre culture' };
+  return {
+    id,
+    label: candidate.analysis?.culture_detected?.trim()
+      || (candidate.analysis_error ? 'Analyse indisponible' : 'Non classée'),
+  };
+}
 
 export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () => void; canLaunch?: boolean }) {
   const [q, setQ] = useState('');
@@ -72,6 +93,9 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const recordCaptureAnalysis = useApp((s) => s.recordCaptureAnalysis);
   const toast = useApp((s) => s.toast);
   const parcels = useApp((s) => s.parcels);
+  const seasonId = useApp((s) => s.filters.seasonId);
+  const colors = useApp((s) => s.colors);
+  const reload = useApp((s) => s.reload);
   const rejectedParcels = useApp((s) => s.rejectedParcels);
   const automaticDetection = useApp((s) => s.automaticDetection);
   const setAutomaticDetection = useApp((s) => s.setAutomaticDetection);
@@ -107,9 +131,13 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const [autoSearchError, setAutoSearchError] = useState<string | null>(null);
   /** Palier réel de la capture, `null` quand elle n'est pas en cours. */
   const [captureProgress, setCaptureProgress] = useState<CaptureProgressView | null>(null);
+  /** Palier de la recherche automatique, affiché dans la même fenêtre bloquante. */
+  const [autoSearchProgress, setAutoSearchProgress] = useState<CaptureProgressView | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const autoAbortRef = useRef<AbortController | null>(null);
   const coordinateFromInput = useRef<[number, number] | null>(null);
   const progressDoneTimer = useRef<number | null>(null);
+  const autoProgressDoneTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (!automaticSearchCenter) return;
@@ -124,6 +152,10 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
 
   useEffect(() => {
     setSearchOpen(false);
+    // Seul l'ouverture des filtres referme le panneau automatique : changer de
+    // parcelle sélectionnée (résultat de l'analyse, fiche ouverte) doit au
+    // contraire laisser les résultats consultables.
+    if (!filtersOpen) return;
     setAutoSearchOpen(false);
     setAutomaticSearchCenter(null);
     setAutomaticSearchRadius(null);
@@ -140,7 +172,12 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   // Annulation au démontage (changement de page) : pas de mise à jour d'état après.
   useEffect(() => () => {
     abortRef.current?.abort();
+    autoAbortRef.current?.abort();
     clearProgressDoneTimer();
+    if (autoProgressDoneTimer.current !== null) {
+      window.clearTimeout(autoProgressDoneTimer.current);
+      autoProgressDoneTimer.current = null;
+    }
   }, []);
 
   // Le placement n'a de sens que sur la carte et jamais pendant un tracé.
@@ -184,6 +221,40 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     setCaptureProgress(null);
   };
 
+  const clearAutoProgressDoneTimer = () => {
+    if (autoProgressDoneTimer.current !== null) {
+      window.clearTimeout(autoProgressDoneTimer.current);
+      autoProgressDoneTimer.current = null;
+    }
+  };
+  /** Palier borné entre 1 et 99 % : 100 % n'est affiché qu'après la synchronisation. */
+  const setAutoSearchStep = (percent: number, label: string) => {
+    setAutoSearchProgress({
+      percent: Math.max(1, Math.min(99, Math.round(percent))),
+      label,
+      done: false,
+    });
+  };
+  const startAutoSearchProgress = () => {
+    clearAutoProgressDoneTimer();
+    setAutoSearchProgress({ percent: 2, label: 'Préparation de la recherche automatique…', done: false });
+  };
+  const finishAutoSearchProgress = () => {
+    clearAutoProgressDoneTimer();
+    setAutoSearchProgress({ percent: 100, label: 'Analyse terminée', done: true });
+    autoProgressDoneTimer.current = window.setTimeout(() => {
+      setAutoSearchProgress((current) => (current ? { ...current, leaving: true } : current));
+      autoProgressDoneTimer.current = window.setTimeout(() => {
+        setAutoSearchProgress(null);
+        autoProgressDoneTimer.current = null;
+      }, 300);
+    }, 700);
+  };
+  const abortAutoSearchProgress = () => {
+    clearAutoProgressDoneTimer();
+    setAutoSearchProgress(null);
+  };
+
   /**
    * Annule la capture ou la détection en cours.
    *
@@ -199,6 +270,18 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     abortCaptureProgress();
     setGeminiPending(false);
     toast('Capture et détection annulées.', 'info');
+  };
+
+  /** Annule la recherche automatique en cours (requêtes et mise à jour d'interface). */
+  const cancelAutomaticSearch = () => {
+    const ctrl = autoAbortRef.current;
+    if (!ctrl || ctrl.signal.aborted) return;
+    autoAbortRef.current = null;
+    ctrl.abort();
+    abortAutoSearchProgress();
+    setPending(false);
+    setAutoProgress(null);
+    toast('Recherche automatique annulée.', 'info');
   };
 
   /**
@@ -394,6 +477,10 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
     selectAutomaticParcel(null);
     setPending(true);
     setAutoProgress(null);
+    startAutoSearchProgress();
+    const ctrl = new AbortController();
+    autoAbortRef.current = ctrl;
+
     try {
       // Contours automatiques ET parcelles tracées manuellement : les deux
       // doivent être classés, pas seulement les tracés VHR.
@@ -402,6 +489,12 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         { lat, lng, radiusM },
         rejectedParcels,
       ).map(toTracedParcelInput);
+      setAutoSearchStep(
+        5,
+        tracedParcels.length
+          ? `${tracedParcels.length} parcelle(s) du rayon à analyser…`
+          : 'Recherche des parcelles dans le rayon…',
+      );
 
       // Le rayon choisi est cadré à l'écran : la zone analysée est visible d'emblée.
       const dLat = radiusM / M_PER_DEG_LAT;
@@ -429,13 +522,23 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         maxInFlight: DETECT_MAX_IN_FLIGHT,
         attempts: DETECT_BATCH_ATTEMPTS,
         run: async (batch) => {
-          if (batch.length === 0) setAutoProgress({ done: 0, total: 0 });
+          if (ctrl.signal.aborted) throw new Error('Recherche annulée.');
+          if (batch.length === 0) {
+            setAutoProgress({ done: 0, total: 0 });
+            setAutoSearchStep(18, 'Recherche des parcelles dans la zone…');
+          } else {
+            const done = Math.min(sent, tracedParcels.length);
+            setAutoSearchStep(
+              10 + Math.round((done / tracedParcels.length) * 75),
+              `Analyse des cultures… ${done}/${tracedParcels.length} parcelle(s) traitée(s)`,
+            );
+          }
           try {
             const result = await api.detectParcels({
               lat, lng, radiusKm: radiusM / 1000,
               baseTemperature: base, threshold, periodDays: period,
               tracedParcels: batch,
-            });
+            }, ctrl.signal);
             const previous: AutomaticDetectionResult | null = merged;
             const collected: AutomaticDetectionResult['parcels'] = [
               ...(previous?.parcels ?? []),
@@ -455,19 +558,31 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
             };
             merged = next;
             setAutomaticDetection(next);
+            if (batch.length === 0) {
+              setAutoSearchStep(82, 'Parcelles découvertes — cultures enregistrées en base…');
+            }
           } catch (error) {
             failure.error = failure.error ?? (error instanceof Error ? error : new Error(String(error)));
             throw error;
           }
         },
         onSettled: (batch, failed) => {
+          if (ctrl.signal.aborted) return;
           if (failed) failedParcels += batch.length;
           sent += batch.length;
           if (tracedParcels.length) {
-            setAutoProgress({ done: Math.min(sent, tracedParcels.length), total: tracedParcels.length });
+            const done = Math.min(sent, tracedParcels.length);
+            setAutoProgress({ done, total: tracedParcels.length });
+            setAutoSearchStep(
+              10 + Math.round((done / tracedParcels.length) * 75),
+              done >= tracedParcels.length
+                ? `${done} parcelle(s) analysée(s) — finalisation…`
+                : `Analyse des cultures… ${done}/${tracedParcels.length} parcelle(s) traitée(s)`,
+            );
           }
         },
       });
+      if (ctrl.signal.aborted) return;
       if (!merged) throw failure.error ?? new Error('La recherche automatique n’a renvoyé aucun résultat.');
       const completed: AutomaticDetectionResult = merged;
       if (failedParcels) {
@@ -480,20 +595,69 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         };
         setAutomaticDetection(merged);
       }
-      selectAutomaticParcel(null);
+
+      // Les résultats viennent d'être enregistrés en base par le backend : on
+      // relit les parcelles, les cultures et les analyses avant de rendre la main,
+      // pour que la carte et les fiches soient déjà à jour sans rechargement.
+      setAutoSearchStep(90, 'Synchronisation des parcelles et des cultures depuis la base…');
+      await reload();
+      if (ctrl.signal.aborted) return;
+      const loadError = useApp.getState().loadError;
+      setAutoSearchStep(97, 'Mise à jour de la carte et des fiches détaillées…');
+
+      // La fiche ouverte est celle de la ligne réellement relue en base : elle
+      // porte la culture, la confiance et la couleur officielles de l'application.
+      const freshParcels = useApp.getState().parcels;
+      const preferred = merged.parcels
+        .map((candidate) => ({ candidate, parcel: parcelForCandidate(candidate, freshParcels) }))
+        .find((entry) => entry.parcel && entry.candidate.analysis)
+        ?? merged.parcels
+          .map((candidate) => ({ candidate, parcel: parcelForCandidate(candidate, freshParcels) }))
+          .find((entry) => entry.parcel);
+      if (preferred?.parcel) {
+        selectAutomaticParcel(preferred.candidate.id);
+        // Une seule fiche ouverte : celle de la parcelle relue en base quand elle
+        // affiche déjà le résultat, sinon les détails du résultat automatique.
+        useApp.getState().select(
+          parcelShowsCandidateCulture(preferred.parcel, preferred.candidate, seasonId)
+            ? preferred.parcel.id
+            : null,
+        );
+        flyTo({
+          center: preferred.parcel.centroid,
+          zoom: Math.max(useApp.getState().mapZoom, 17),
+        });
+      } else {
+        selectAutomaticParcel(null);
+      }
+
       const barley = merged.parcels.filter((candidate) => candidate.analysis?.is_barley === true).length;
       const failed = merged.parcels.filter((candidate) => candidate.analysis === null).length;
+      if (loadError) {
+        setAutoSearchError(
+          'Analyse terminée, mais la synchronisation avec la base a échoué : les résultats restent affichés, relancez la recherche si nécessaire.',
+        );
+      }
       toast(
         `${merged.candidates_found} candidat(s) traité(s) — ${barley} avec orge détectée.`
           + (failed ? ` ${failed} parcelle(s) sans résultat (analyse satellite indisponible).` : '')
-          + (failedParcels ? ` ${failedParcels} parcelle(s) non traitées (lots en échec).` : ''),
-        barley ? 'ok' : 'info',
+          + (failedParcels ? ` ${failedParcels} parcelle(s) non traitées (lots en échec).` : '')
+          + (loadError ? ' Synchronisation avec la base incomplète.' : ' Parcelles, cultures et fiches actualisées.'),
+        loadError ? 'warn' : barley ? 'ok' : 'info',
       );
+      finishAutoSearchProgress();
     } catch (error) {
-      setAutoSearchError(error instanceof Error ? error.message : 'La recherche automatique a échoué.');
+      if (autoAbortRef.current !== ctrl) return;
+      if (!ctrl.signal.aborted) {
+        setAutoSearchError(error instanceof Error ? error.message : 'La recherche automatique a échoué.');
+      }
+      abortAutoSearchProgress();
     } finally {
-      setPending(false);
-      setAutoProgress(null);
+      if (autoAbortRef.current === ctrl) {
+        autoAbortRef.current = null;
+        setPending(false);
+        setAutoProgress(null);
+      }
     }
   };
 
@@ -757,27 +921,52 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
             {automaticDetection && (
               <div className="autosearch__results">
                 <b>Résultat : {automaticDetection.candidates_found} parcelle(s) · {automaticDetection.analyzed_count} analysée(s)</b>
-                <span className="hint">
-                  Orge : {automaticDetection.parcels.filter((candidate) => candidate.analysis?.is_barley === true).length}
-                  {' · '}Autre culture : {automaticDetection.parcels.filter((candidate) => candidate.analysis?.is_barley === false).length}
-                  {' · '}À vérifier : {automaticDetection.parcels.filter((candidate) => !candidate.analysis || candidate.analysis.is_barley == null).length}
+                <span className="hint autosearch__legend">
+                  <span><i style={{ background: colors.orge }} /> Orge : {automaticDetection.parcels.filter((candidate) => candidate.analysis?.is_barley === true).length}</span>
+                  <span><i style={{ background: colors.autre }} /> Autre culture : {automaticDetection.parcels.filter((candidate) => candidate.analysis?.is_barley === false).length}</span>
+                  <span><i style={{ background: colors.inconnue }} /> À vérifier : {automaticDetection.parcels.filter((candidate) => !candidate.analysis || candidate.analysis.is_barley == null).length}</span>
                 </span>
                 {automaticDetection.notice && <p className="hint">{automaticDetection.notice}</p>}
                 {automaticDetection.parcels.map((candidate) => {
                   const analysis = candidate.analysis;
-                  const isBarley = analysis?.is_barley === true;
-                  const label = analysis?.culture_detected ?? (candidate.analysis_error ? 'Analyse indisponible' : 'Non classée');
+                  const culture = automaticCulture(candidate);
+                  const matchedParcel = parcelForCandidate(candidate, parcels);
+                  // Fiche relue en base à jour de ce résultat : elle fait foi.
+                  // Sinon (résultat en cours d'enregistrement) l'analyse du
+                  // candidat reste l'information la plus récente.
+                  const refreshedParcel = matchedParcel
+                    && parcelShowsCandidateCulture(matchedParcel, candidate, seasonId)
+                    ? matchedParcel
+                    : null;
+                  const isSelected = selectedAutomaticParcelId === candidate.id
+                    || (!!matchedParcel && selectedId === matchedParcel.id);
                   return (
-                    <button className={`autosearch__result ${selectedAutomaticParcelId === candidate.id ? 'is-selected' : ''}`} key={candidate.id} onClick={() => {
+                    <button className={`autosearch__result ${isSelected ? 'is-selected' : ''}`} key={candidate.id} onClick={() => {
                       if (!automaticDetection.parcels.some((p) => p.id === candidate.id)) {
                         selectAutomaticParcel(null);
                         return;
                       }
                       selectAutomaticParcel(candidate.id);
-                      flyTo({ center: [candidate.center.lat, candidate.center.lng], zoom: 17 });
+                      if (refreshedParcel) {
+                        // Fiche réelle relue en base : culture et couleur officielles.
+                        useApp.getState().select(refreshedParcel.id);
+                        flyTo({
+                          center: refreshedParcel.centroid,
+                          zoom: Math.max(useApp.getState().mapZoom, 17),
+                        });
+                      } else {
+                        // Détails de l'analyse (plus récents que la fiche en base).
+                        useApp.getState().select(null);
+                        flyTo({
+                          center: matchedParcel
+                            ? matchedParcel.centroid
+                            : [candidate.center.lat, candidate.center.lng],
+                          zoom: Math.max(useApp.getState().mapZoom, 17),
+                        });
+                      }
                     }}>
-                      <span className={`autosearch__dot ${isBarley ? 'autosearch__dot--barley' : analysis ? 'autosearch__dot--other' : ''}`} />
-                      <span><strong>{label}</strong><small>{withoutToolName(analysis?.verdict ?? candidate.analysis_error ?? candidate.tags.source ?? candidate.id)}</small></span>
+                      <span className="autosearch__dot" style={{ background: colors[culture.id] }} />
+                      <span><strong>{culture.label}</strong><small>{withoutToolName(analysis?.verdict ?? candidate.analysis_error ?? candidate.tags.source ?? candidate.id)}</small></span>
                       {analysis?.confidence != null && <em>{Math.round(analysis.confidence)}%</em>}
                     </button>
                   );
@@ -849,7 +1038,14 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
         {selectedAutomaticParcelId && automaticDetection && (() => {
           const candidate = automaticDetection.parcels.find((parcel) => parcel.id === selectedAutomaticParcelId);
           if (!candidate) return null;
+          // Une ligne correspondante a été relue en base et affiche déjà ce
+          // résultat : c'est la fiche réelle de la parcelle qui s'affiche, avec
+          // sa culture et sa couleur.
+          if (parcelShowsCandidateCulture(parcelForCandidate(candidate, parcels), candidate, seasonId)) {
+            return null;
+          }
           const result = candidate.analysis;
+          const culture = automaticCulture(candidate);
           const areaHa = ringAreaHa(candidate.coordinates.map(({ lat, lng }) => [lat, lng] as [number, number]));
           const presence = result?.barley_presence;
           const confidence = result?.confidence;
@@ -860,7 +1056,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
           return (
             <aside className="automatic-parcel-drawer glass" aria-label="Détails de l’analyse de la parcelle">
               <header className="automatic-parcel-drawer__head">
-                <div><h2>{candidate.analysis?.culture_detected ?? 'Parcelle analysée'}</h2><p>{candidate.id} · {withoutToolName(candidate.tags.source ?? 'détection automatique')}</p></div>
+                <div><h2>{culture.label}</h2><p>{candidate.id} · {withoutToolName(candidate.tags.source ?? 'détection automatique')}</p></div>
                 <button className="icon-btn" onClick={() => selectAutomaticParcel(null)} aria-label="Fermer les détails"><X size={18} /></button>
               </header>
               <div className="automatic-parcel-drawer__body">
@@ -868,12 +1064,12 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
                   <p className="note note--warn">{withoutToolName(candidate.analysis_error ?? 'Aucun résultat d’analyse disponible.')}</p>
                 ) : <>
                   <section className="automatic-parcel-summary">
-                    <div className="automatic-parcel-shape" aria-hidden><span /></div>
+                    <div className="automatic-parcel-shape" aria-hidden><span style={{ background: colors[culture.id] }} /></div>
                     <dl><dt>Superficie estimée</dt><dd>{areaHa.toFixed(2)} ha</dd><dt>Présence d’orge</dt><dd className={`presence presence--${presence ?? 'none'}`}>{presence === 'confirmed' ? 'Confirmée' : presence === 'probable' ? 'Probable' : 'Non détectée'}</dd></dl>
                   </section>
                   <section>
                     <h3>Résultat de classification</h3>
-                    <div className="automatic-parcel-confidence"><strong>{result.culture_detected ?? 'Culture indéterminée'}</strong><b>{score(confidence)}</b></div>
+                    <div className="automatic-parcel-confidence"><strong>{culture.label}</strong><b>{score(confidence)}</b></div>
                     <div className="automatic-parcel-meter"><i style={{ width: `${Math.min(100, Math.max(0, confidence ?? 0))}%` }} /></div>
                     <p>{result.verdict ?? 'Verdict indisponible.'}</p>
                     {result.details && <p className="hint">{result.details}</p>}
@@ -956,6 +1152,13 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
       )}
 
       {captureProgress && <CaptureProgressOverlay progress={captureProgress} onCancel={cancelCapture} />}
+      {autoSearchProgress && (
+        <CaptureProgressOverlay
+          variant="automatic"
+          progress={autoSearchProgress}
+          onCancel={cancelAutomaticSearch}
+        />
+      )}
     </>
   );
 }

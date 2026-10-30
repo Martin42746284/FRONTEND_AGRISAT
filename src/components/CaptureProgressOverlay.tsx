@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Satellite, Sparkles, X } from 'lucide-react';
+import { Check, Radar, Satellite, Sparkles, X } from 'lucide-react';
 
 export interface CaptureProgressView {
-  /** Pourcentage réel transmis par le backend. */
+  /** Avancement réel : palier backend de la capture ou lots d'analyse terminés. */
   percent: number;
-  /** Étape en cours, elle aussi transmise par le backend. */
+  /** Étape en cours, avec le compteur de parcelles quand il est connu. */
   label: string;
   /** Le résultat est arrivé : on laisse 100 % visible un court instant. */
   done: boolean;
@@ -13,8 +13,11 @@ export interface CaptureProgressView {
   leaving?: boolean;
 }
 
+export type CaptureProgressVariant = 'capture' | 'automatic';
+
 /**
- * Fenêtre bloquante affichée pendant la capture et la détection des parcelles.
+ * Fenêtre bloquante affichée pendant la capture et la détection des parcelles,
+ * ou pendant la recherche automatique Orge / Autre culture.
  *
  * Le portail est monté directement dans `document.body` : l'application devient
  * inerte (souris et clavier) pendant le traitement, tandis que la carte reste
@@ -23,12 +26,17 @@ export interface CaptureProgressView {
 export default function CaptureProgressOverlay({
   progress,
   onCancel,
+  variant = 'capture',
 }: {
   progress: CaptureProgressView;
   onCancel?: () => void;
+  variant?: CaptureProgressVariant;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const percent = Math.max(0, Math.min(100, Math.round(progress.percent)));
+  const automatic = variant === 'automatic';
+  const titleId = automatic ? 'automatic-overlay-title' : 'capture-overlay-title';
+  const descriptionId = automatic ? 'automatic-overlay-description' : 'capture-overlay-description';
 
   useEffect(() => {
     const root = document.getElementById('root');
@@ -64,8 +72,8 @@ export default function CaptureProgressOverlay({
       className={`capture-overlay${progress.leaving ? ' is-leaving' : ''}`}
       role="dialog"
       aria-modal="true"
-      aria-labelledby="capture-overlay-title"
-      aria-describedby="capture-overlay-description"
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
       aria-busy={!progress.done}
     >
       <div className="capture-overlay__veil" aria-hidden />
@@ -80,19 +88,30 @@ export default function CaptureProgressOverlay({
           <span className="capture-overlay__orbit capture-overlay__orbit--inner" />
           <span className="capture-overlay__halo" />
           <span className="capture-overlay__core">
-            {progress.done ? <Check size={30} strokeWidth={2.4} /> : <Satellite size={30} />}
+            {progress.done
+              ? <Check size={30} strokeWidth={2.4} />
+              : automatic ? <Radar size={30} /> : <Satellite size={30} />}
           </span>
         </div>
 
         <div className="capture-overlay__copy">
-          <p className="capture-overlay__eyebrow"><Sparkles size={13} /> Capture et détection des parcelles</p>
-          <h2 id="capture-overlay-title">
-            {progress.done ? 'Analyse terminée' : 'Analyse satellite en cours'}
-          </h2>
-          <p id="capture-overlay-description">
+          <p className="capture-overlay__eyebrow">
+            {automatic ? <Radar size={13} /> : <Sparkles size={13} />}
+            {automatic ? 'Recherche automatique Orge / Autre culture' : 'Capture et détection des parcelles'}
+          </p>
+          <h2 id={titleId}>
             {progress.done
-              ? 'Le résultat de la détection est prêt sur la carte.'
-              : 'Capture satellite, détection des parcelles et enregistrement en base.'}
+              ? 'Analyse terminée'
+              : automatic ? 'Recherche des cultures en cours' : 'Analyse satellite en cours'}
+          </h2>
+          <p id={descriptionId}>
+            {progress.done
+              ? automatic
+                ? 'Les parcelles, les cultures et les couleurs sont à jour sur la carte.'
+                : 'Le résultat de la détection est prêt sur la carte.'
+              : automatic
+                ? 'Analyse des parcelles du rayon et enregistrement des cultures en base.'
+                : 'Capture satellite, détection des parcelles et enregistrement en base.'}
           </p>
         </div>
 
@@ -125,7 +144,7 @@ export default function CaptureProgressOverlay({
 
         {!progress.done && onCancel && (
           <button type="button" className="btn btn--sm capture-overlay__cancel" onClick={onCancel}>
-            <X size={14} /> Annuler l’analyse
+            <X size={14} /> {automatic ? 'Annuler la recherche' : 'Annuler l’analyse'}
           </button>
         )}
       </div>

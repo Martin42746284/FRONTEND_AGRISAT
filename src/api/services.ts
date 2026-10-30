@@ -427,10 +427,14 @@ export const api = {
   },
 
   /** Détection automatique de parcelles (GDD + base parcelles). */
-  async detectParcels(payload: DetectParcelsPayload): Promise<AutomaticDetectionResult> {
+  async detectParcels(
+    payload: DetectParcelsPayload,
+    signal?: AbortSignal,
+  ): Promise<AutomaticDetectionResult> {
     return request<AutomaticDetectionResult>('/api/detect-parcels', {
       method: 'POST',
       body: JSON.stringify(payload),
+      signal: signal ?? null,
     }, DETECT_PARCELS_TIMEOUT_MS);
   },
 

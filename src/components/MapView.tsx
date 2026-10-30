@@ -9,6 +9,7 @@ import { isAnalyzedParcel } from '../lib/analysis-parcels';
 import { GEMINI_OUTLINE_COLOR, parcelOutlineStyle } from '../lib/parcel-outline-style';
 import { isGeminiParcel } from '../lib/parcel-sources';
 import { pickParcelAt } from '../lib/parcel-selection';
+import { candidateCulture, parcelForCandidate, parcelShowsCandidateCulture } from '../lib/candidate-parcel';
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
 
@@ -511,10 +512,20 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         if (state.drawing) return;
         // Un contour non classé (tracé manuel, VHR) peut recouvrir une parcelle
         // classée : le clic ouvre alors celle-ci pour afficher sa culture.
+        // L'écouteur est créé avec le polygone et n'est pas recréé lors des
+        // mises à jour : on relit donc les parcelles courantes (analyse,
+        // correction…) au moment du clic.
+        const currentParcels = [...latest.current.parcels.values()];
+        const clicked = latest.current.parcels.get(parcel.id) ?? parcel;
         const point: [number, number] = event.latLng
           ? [event.latLng.lat(), event.latLng.lng()]
-          : parcel.centroid;
-        const target = pickParcelAt(point, parcel, parcels, (id) => onMap.current.has(id));
+          : clicked.centroid;
+        const target = pickParcelAt(
+          point,
+          clicked,
+          currentParcels,
+          (id) => onMap.current.has(id),
+        );
         state.select(target.id);
       });
       // Double-clic : passe en édition du contour (sommets déplaçables). Droit limité par le rôle.
@@ -538,14 +549,23 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     if (!map || !automaticDetection) return;
 
     for (const candidate of automaticDetection.parcels) {
+      // Parcelle enregistrée correspondante. Tant que sa fiche relue en base
+      // n'affiche pas encore la culture détectée (résultat en cours
+      // d'enregistrement, relecture en cours), l'aperçu temporaire reste utile :
+      // il montre le résultat dès qu'il arrive. En revanche, quand la parcelle
+      // enregistrée porte déjà cette culture, cet aperçu empilé au-dessus d'elle
+      // masquerait sa couleur officielle et capterait les clics : on ne le
+      // dessine plus.
+      const culture = candidateCulture(candidate);
+      const stored = parcelForCandidate(candidate, parcels);
+      if (stored && baseIds.has(stored.id) && parcelShowsCandidateCulture(stored, candidate, f.seasonId)) continue;
+
       const points = candidate.coordinates
         .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng))
         .map(({ lat, lng }) => ({ lat, lng }));
       if (points.length < 3) continue;
       const presence = candidate.analysis?.barley_presence;
-      const color = presence === 'confirmed' ? '#16A34A'
-        : presence === 'probable' ? '#E3B505'
-          : presence === 'none' ? '#64748B' : '#38BDF8';
+      const color = colors[culture];
       const polygon = new google.maps.Polygon({
         map,
         paths: points,
@@ -567,6 +587,15 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
           return;
         }
         if (state.borneDraft) return;
+        // La fiche de la parcelle enregistrée s'ouvre dès que celle-ci affiche
+        // déjà la culture détectée (données relues en base, donc à jour).
+        const stored = parcelForCandidate(candidate, [...latest.current.parcels.values()]);
+        if (stored && parcelShowsCandidateCulture(stored, candidate, state.filters.seasonId)) {
+          state.select(stored.id);
+          return;
+        }
+        // Résultat pas encore relu en base : ses détails d'analyse s'affichent.
+        state.select(null);
         state.selectAutomaticParcel(candidate.id);
       });
       automaticLayers.current.push(polygon);
@@ -586,7 +615,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       automaticLayers.current.forEach((layer) => layer.setMap(null));
       automaticLayers.current = [];
     };
-  }, [automaticDetection, map]);
+  }, [automaticDetection, map, colors, parcels, baseIds, f.seasonId]);
 
   // Visibilité et styles : aucun nouveau calcul IA lors d’un changement de filtre.
   useEffect(() => {
@@ -627,12 +656,11 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       // et KML — il n'a aucune couleur de culture à afficher.
       const hasNoCulture = !isAnalyzedParcel(parcel) && !isUntouchedVhrOutline;
       // Contour importé depuis un fichier KML : trait rouge de référence des
-      // tracés Gemini, pour une lecture visuelle cohérente sur la carte. Une
-      // parcelle blé/avoine, toujours classée « Autre culture » par la règle
-      // métier, reprend la couleur de ce statut dès qu'elle est analysée.
+      // tracés Gemini, pour une lecture visuelle cohérente sur la carte. Dès
+      // qu'elle est analysée, quelle que soit la culture détectée (blé, avoine,
+      // orge…), la parcelle reprend la couleur de culture habituelle.
       const isKmlReference = Boolean(
-        (parcel.kmlImported || parcel.kmlCulture)
-        && !(parcel.kmlCulture && isAnalyzedParcel(parcel)),
+        (parcel.kmlImported || parcel.kmlCulture) && !isAnalyzedParcel(parcel),
       );
       const { visible, options } = computeStyle(result, context, parcel.id === selectedId);
       if (!visible && !isGeminiOutline && !isKmlReference) {
