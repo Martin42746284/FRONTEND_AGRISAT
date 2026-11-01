@@ -4,9 +4,12 @@ import type {
   Analysis, AnalysisParcel, AuditEntry, BorneGps, Commune, CropResult, CultureId, Filters, LatLng, Parcel, Region, Role,
   SearchedLocation, User,
 } from '../types';
-import { AREA_MAX, DEFAULT_COLORS, DEFAULT_SEASON, PIPELINE_STEPS, CURRENT_MODEL, ROLES } from '../data/constants';
-import { api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectionResult, type ParcelUpdate, type AuditEntryCreate } from '../api/services';
-import { maltoToFrontend, maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
+import { AREA_MAX, CULTURE_BY_ID, DEFAULT_COLORS, DEFAULT_SEASON, PIPELINE_STEPS, CURRENT_MODEL, ROLES } from '../data/constants';
+import {
+  api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectionResult, type AuditEntryCreate,
+  type CreateMaltoParcelPayload, type ParcelUpdate,
+} from '../api/services';
+import { maltoToFrontend, maltoVhrToFrontend, type MaltoParcel, type MaltoVhrFeature } from '../api/maltoAdapter';
 import { centroidOf, isDuplicateVhrParcel, pointInPolygon, ringAreaHa } from '../lib/geometry';
 import {
   analyzedParcelIds, cultureCountsForAnalysis, isAnalyzedParcel, parcelIdsOfAnalysis,
@@ -16,8 +19,9 @@ import { correctionText, withCorrectedClass } from '../lib/culture-sync';
 import { captureThumbnail } from '../lib/capture-image';
 import { statusFromConfidence } from '../lib/parcel-status';
 import {
-  isExplicitParcel, isManualParcel, REJECTED_PARCEL_SOURCE,
+  isExplicitParcel, isManualParcel, REJECTED_PARCEL_SOURCE, SPLIT_PARCEL_SOURCE,
 } from '../lib/parcel-sources';
+import { snapToRing, splitParcelByCut } from '../lib/polygon-split';
 import {
   addRejection, isDatabaseParcelId, isRejectedParcel, mergeRejections, type RejectedParcel,
 } from '../lib/rejections';
@@ -193,6 +197,20 @@ interface State {
   /** Sommets en cours de déplacement — recopiés au save dans `parcels`. */
   editingCoords: LatLng[] | null;
 
+  /**
+   * Scission manuelle : parcelle en cours de découpe et ligne de coupe tracée.
+   * La coupe part du contour, le suit par ses sommets intermédiaires et se
+   * termine sur le contour opposé.
+   */
+  splitParcelId: string | null;
+  splitDraft: LatLng[];
+  startSplitParcel: (id: string) => void;
+  addSplitPoint: (point: LatLng) => void;
+  undoSplitPoint: () => void;
+  cancelSplitParcel: () => void;
+  /** Enregistre la scission : la parcelle d'origine garde son identité et sa culture. */
+  saveSplitParcel: () => Promise<boolean>;
+
   init: () => Promise<void>;
   /** Recharge les données de la base (bouton « Réessayer » après un échec). */
   reload: () => Promise<void>;
@@ -251,6 +269,8 @@ let toastSeq = 1;
 let flySeq = 1;
 /** Un seul lot « Analyser les cultures » à la fois : le backend traite les parcelles en série. */
 let cultureAnalysisRunning = false;
+/** Une seule scission enregistrée à la fois (évite deux écritures sur un double clic). */
+let splitSaveRunning = false;
 const rint = (a: number, b: number) => Math.floor(a + Math.random() * (b - a + 1));
 
 export const useApp = create<State>()(
@@ -334,6 +354,8 @@ export const useApp = create<State>()(
       selectedAutomaticParcelId: null,
       editingParcelId: null,
       editingCoords: null,
+      splitParcelId: null,
+      splitDraft: [],
 
       init: async () => {
         if (get().ready) return;
@@ -436,12 +458,16 @@ export const useApp = create<State>()(
       setThreshold: (v) => set({ threshold: v }),
       setBasemap: (b) => set({ basemap: b }),
       setShowCoverage: (v) => set({ showCoverage: v }),
-      // Changer de sélection (ou fermer la fiche) met fin à une édition en cours.
+      // Changer de sélection (ou fermer la fiche) met fin à une édition ou à une
+      // scission en cours.
       select: (id) =>
         set((s) => ({
           selectedId: id,
           ...(s.editingParcelId && s.editingParcelId !== id
             ? { editingParcelId: null, editingCoords: null }
+            : {}),
+          ...(s.splitParcelId && s.splitParcelId !== id
+            ? { splitParcelId: null, splitDraft: [] }
             : {}),
         })),
       flyTo: (t) => set({ fly: { ...t, nonce: flySeq++ } }),
@@ -458,6 +484,8 @@ export const useApp = create<State>()(
           selectedId: id,
           editingParcelId: id,
           editingCoords: parcel.coords.map(([lat, lng]) => [lat, lng] as LatLng),
+          splitParcelId: null,
+          splitDraft: [],
         });
       },
       setEditingCoords: (coords) => set({ editingCoords: coords }),
@@ -494,8 +522,193 @@ export const useApp = create<State>()(
         );
       },
 
-      startDraw: () => set({ drawing: true, drawMode: 'zone', draft: [], manualParcelDraft: null, selectedId: null }),
-      startParcelDraw: () => set({ drawing: true, drawMode: 'parcel', draft: [], manualParcelDraft: null, selectedId: null }),
+      startSplitParcel: (id) => {
+        const s = get();
+        const parcel = s.parcels.find((p) => p.id === id);
+        if (!parcel) return;
+        if (!s.user || !ROLES[s.user.role].can.correct) {
+          s.toast('Votre profil ne permet pas de scinder une parcelle.', 'warn');
+          return;
+        }
+        set({
+          splitParcelId: id,
+          splitDraft: [],
+          selectedId: id,
+          editingParcelId: null,
+          editingCoords: null,
+          drawing: false,
+          draft: [],
+          bornePlacement: false,
+          borneDraft: null,
+        });
+        s.toast('Posez un point sur le contour, suivez la limite réelle, puis terminez sur le bord opposé.', 'info');
+      },
+      addSplitPoint: (point) => {
+        const s = get();
+        if (!s.splitParcelId) return;
+        const parcel = s.parcels.find((p) => p.id === s.splitParcelId);
+        if (!parcel) return;
+        // Le premier point est une extrémité de coupe : il doit tomber sur le
+        // contour. La tolérance suit le zoom (≈ 14 px) pour rester utilisable à
+        // toute échelle — un clic au milieu de la parcelle n'est jamais accroché.
+        // Les points suivants sont libres : ils suivent la limite réelle.
+        if (s.splitDraft.length === 0) {
+          const metersPerPx = (156_543.03392 * Math.cos((point[0] * Math.PI) / 180)) / 2 ** s.mapZoom;
+          const snapped = snapToRing(point, parcel.coords, Math.max(1.5, Math.min(30, 14 * metersPerPx)));
+          if (!snapped) {
+            s.toast('Posez le premier point sur le contour de la parcelle.', 'warn');
+            return;
+          }
+          set({ splitDraft: [snapped.point] });
+          return;
+        }
+        set({ splitDraft: [...s.splitDraft, point] });
+      },
+      undoSplitPoint: () => set((s) => ({ splitDraft: s.splitDraft.slice(0, -1) })),
+      cancelSplitParcel: () => {
+        set({ splitParcelId: null, splitDraft: [] });
+        get().toast('Scission annulée — contour inchangé.', 'info');
+      },
+      saveSplitParcel: async () => {
+        if (splitSaveRunning) return false;
+        const s = get();
+        const id = s.splitParcelId;
+        if (!id) return false;
+        const parcel = s.parcels.find((p) => p.id === id);
+        if (!parcel) {
+          set({ splitParcelId: null, splitDraft: [] });
+          return false;
+        }
+        const split = splitParcelByCut(parcel.coords, s.splitDraft);
+        if (!split.ok) {
+          s.toast(split.error, 'warn');
+          return false;
+        }
+        splitSaveRunning = true;
+        const [first, second] = split.parts;
+        const keeperIsFirst = keeperPartIndex(parcel.centroid, first, second) === 0;
+        const keeperCoords = keeperIsFirst ? first : second;
+        const otherCoords = keeperIsFirst ? second : first;
+        const keeperCentroid = centroidOf(keeperCoords);
+        const keeperArea = ringAreaHa(keeperCoords);
+        const otherCentroid = centroidOf(otherCoords);
+        const otherArea = ringAreaHa(otherCoords);
+        const seasons = [...new Set([...Object.keys(parcel.results), s.filters.seasonId])];
+        const today = new Date().toLocaleDateString('fr-FR');
+
+        // La partie détachée est un contour seul, comme une parcelle tracée à la
+        // main : sa culture reste à déterminer par une analyse.
+        let newPart: Parcel;
+        try {
+          const row = await api.createParcel(parcelCreatePayload(parcel, otherCoords, otherCentroid, otherArea, {
+            label: `Scission du ${today}`,
+            dataSource: SPLIT_PARCEL_SOURCE,
+            verdict: 'Contour issu d’une scission manuelle — culture à analyser',
+            details: 'Partie détachée manuellement d’une parcelle fusionnée par l’IA.',
+            notes: `Partie d’une parcelle scindée manuellement (${parcel.id}).`,
+            saison: s.filters.seasonId,
+            keepCulture: false,
+          }));
+          const [mapped] = maltoToFrontend([row as unknown as MaltoParcel], { regions: s.regions, communes: s.communes });
+          if (!mapped) throw new Error('géométrie de la nouvelle partie invalide');
+          newPart = {
+            ...mapped,
+            results: Object.fromEntries(seasons.map((seasonId) => [seasonId, clearedCultureResult(seasonId)])),
+          };
+        } catch (error) {
+          console.warn('[AgriSat] Création de la partie scindée impossible :', error);
+          splitSaveRunning = false;
+          s.toast('Scission impossible : la parcelle est inchangée.', 'danger');
+          return false;
+        }
+
+        // Persistance de la partie qui garde l'identité de la parcelle d'origine.
+        // Un contour qui n'était pas en base (tracé IA) est enregistré, et son
+        // ancienne empreinte marquée supprimée : sans cela il serait retracé au
+        // rechargement et la scission disparaîtrait.
+        let keeperId = parcel.id;
+        const createdIds = [newPart.id];
+        try {
+          if (isDatabaseParcelId(parcel.id)) {
+            await api.updateParcelGeometry(parcel.id, {
+              coordinates: keeperCoords.map(([lat, lng]) => ({ lat, lng })),
+              center_lat: keeperCentroid[0],
+              center_lng: keeperCentroid[1],
+              surface_ha: keeperArea,
+            });
+          } else {
+            const keeperRow = await api.createParcel(parcelCreatePayload(parcel, keeperCoords, keeperCentroid, keeperArea, {
+              label: `Scission du ${today}`,
+              dataSource: parcel.dataSource ?? SPLIT_PARCEL_SOURCE,
+              verdict: 'Contour issu d’une scission manuelle',
+              details: 'Partie conservée d’une parcelle scindée manuellement.',
+              notes: `Partie d’une parcelle scindée manuellement (${parcel.id}).`,
+              saison: s.filters.seasonId,
+              keepCulture: true,
+            }));
+            keeperId = String((keeperRow as { id?: unknown }).id ?? '');
+            if (!keeperId) throw new Error('identifiant de la partie conservée absent');
+            createdIds.push(keeperId);
+            const markerRow = await api.createParcel(parcelCreatePayload(parcel, parcel.coords, parcel.centroid, parcel.areaHa, {
+              label: '',
+              dataSource: REJECTED_PARCEL_SOURCE,
+              verdict: 'Contour automatique supprimé',
+              details: 'Ancien contour fusionné remplacé par une scission manuelle.',
+              notes: 'Contour automatique supprimé par l’utilisateur.',
+              saison: null,
+              keepCulture: false,
+            }));
+            createdIds.push(String((markerRow as { id?: unknown }).id ?? ''));
+          }
+        } catch (error) {
+          console.warn('[AgriSat] Enregistrement de la scission impossible :', error);
+          // Rien ne doit rester à moitié écrit : les parties déjà créées sont retirées.
+          for (const createdId of createdIds.filter((value) => isDatabaseParcelId(value))) {
+            try {
+              await api.deleteParcel(createdId);
+            } catch (cleanupError) {
+              console.warn('[AgriSat] Nettoyage de la scission impossible :', cleanupError);
+            }
+          }
+          splitSaveRunning = false;
+          s.toast('Scission impossible : la parcelle est inchangée.', 'danger');
+          return false;
+        }
+
+        const keeper: Parcel = {
+          ...parcel,
+          id: keeperId,
+          coords: keeperCoords,
+          centroid: keeperCentroid,
+          areaHa: keeperArea,
+        };
+        set((st) => ({
+          parcels: [...st.parcels.map((p) => (p.id === parcel.id ? keeper : p)), newPart],
+          splitParcelId: null,
+          splitDraft: [],
+          selectedId: keeper.id,
+          ...(isDatabaseParcelId(parcel.id)
+            ? {}
+            : { rejectedParcels: addRejection(st.rejectedParcels, parcel) }),
+        }));
+        get().logAudit('Scission de parcelle', `${parcel.id} · ${keeperArea.toFixed(2)} + ${otherArea.toFixed(2)} ha`);
+        get().toast(
+          `Parcelle scindée : ${keeperArea.toFixed(2)} ha (culture conservée) et `
+          + `${otherArea.toFixed(2)} ha (à analyser).`,
+          'ok',
+        );
+        splitSaveRunning = false;
+        return true;
+      },
+
+      startDraw: () => set({
+        drawing: true, drawMode: 'zone', draft: [], manualParcelDraft: null, selectedId: null,
+        splitParcelId: null, splitDraft: [],
+      }),
+      startParcelDraw: () => set({
+        drawing: true, drawMode: 'parcel', draft: [], manualParcelDraft: null, selectedId: null,
+        splitParcelId: null, splitDraft: [],
+      }),
       addDraftPoint: (p) => set((s) => ({ draft: [...s.draft, p] })),
       undoDraft: () => set((s) => ({ draft: s.draft.slice(0, -1) })),
       finishDraw: () => {
@@ -1200,6 +1413,88 @@ function clearedCultureResult(seasonId: string): CropResult {
     processedAt: at,
     observedFrom: at.slice(0, 10),
     observedTo: at.slice(0, 10),
+  };
+}
+
+/**
+ * Partie qui reprend l'identité (et la culture) de la parcelle d'origine :
+ * celle qui contient son centre. Pour un contour concave dont le centre tombe
+ * hors des deux parties, la plus grande part fait foi.
+ */
+function keeperPartIndex(centroid: LatLng, first: LatLng[], second: LatLng[]): 0 | 1 {
+  const inFirst = pointInPolygon(centroid, first);
+  const inSecond = pointInPolygon(centroid, second);
+  if (inFirst !== inSecond) return inFirst ? 0 : 1;
+  return ringAreaHa(first) >= ringAreaHa(second) ? 0 : 1;
+}
+
+/**
+ * Payload POST /api/parcelles d'un contour issu d'une scission.
+ *
+ * La nouvelle partie est un contour seul (culture à déterminer par une analyse).
+ * Quand la parcelle scindée n'existait qu'à l'écran (tracé IA non enregistré),
+ * la partie conservée reprend en plus la culture de la parcelle d'origine pour
+ * que son enregistrement ne perde pas les données déjà analysées.
+ */
+function parcelCreatePayload(
+  parcel: Parcel,
+  coords: LatLng[],
+  centroid: LatLng,
+  areaHa: number,
+  options: {
+    label: string;
+    dataSource: string;
+    verdict: string;
+    details: string;
+    notes: string;
+    /** Saison dans laquelle la partie est enregistrée (affichage après rechargement). */
+    saison: string | null;
+    keepCulture: boolean;
+  },
+): CreateMaltoParcelPayload {
+  const detail = options.keepCulture ? parcel.cultureDetail : undefined;
+  const result = options.keepCulture
+    ? parcel.results[DEFAULT_SEASON] ?? Object.values(parcel.results)[0]
+    : undefined;
+  // Culture de repli quand seule la fiche locale existe (tracé IA analysé à
+  // l'écran, pas encore relu depuis une ligne en base).
+  const fallbackCulture = result && result.culture !== 'inconnue' ? CULTURE_BY_ID[result.culture].label : null;
+  return {
+    label: options.label,
+    coordinates: coords.map(([lat, lng]) => ({ lat, lng })),
+    center_lat: centroid[0],
+    center_lng: centroid[1],
+    surface_ha: areaHa,
+    culture_declared: detail?.declared ?? fallbackCulture ?? 'Inconnue',
+    culture_detected: detail?.detected ?? fallbackCulture,
+    ndvi_percentage: detail?.ndvi ?? null,
+    ndre: detail?.ndre ?? null,
+    spectral_bands: detail?.spectralBands ?? null,
+    confidence: detail?.confidence ?? (result ? Math.round(result.confidence * 100) : null),
+    verdict: detail?.verdict ?? options.verdict,
+    details: detail?.details ?? options.details,
+    saison: detail?.seasonLabel ?? result?.seasonId ?? options.saison,
+    soil_type: detail?.soilType ?? null,
+    risk_factors: detail?.riskFactors ?? [],
+    recommendations: detail?.recommendations ?? null,
+    data_source: options.dataSource,
+    owner_name: detail?.ownerName ?? '',
+    notes: detail?.notes ?? options.notes,
+    time_series_s2: detail?.timeSeries ?? [],
+    time_series_s1: [],
+    time_series_rain: [],
+    estimated_planting_date: detail?.plantingDate ?? null,
+    estimated_harvest_date: detail?.harvestDate ?? null,
+    days_since_planting: detail?.daysSincePlanting ?? null,
+    growth_stage: detail?.growthStage ?? null,
+    planting_confidence: detail?.plantingConfidence ?? null,
+    evi: detail?.evi ?? null,
+    savi: detail?.savi ?? null,
+    ndwi: detail?.ndwi ?? null,
+    agro_score: detail?.agroScore ?? null,
+    hybrid_score: detail?.hybridScore ?? null,
+    cnn_prob_barley: detail?.cnnProbBarley ?? null,
+    cnn_prob_non_barley: detail?.cnnProbNonBarley ?? null,
   };
 }
 

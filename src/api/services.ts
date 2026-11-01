@@ -70,6 +70,19 @@ export interface ParcelUpdate {
   saison?: string;
 }
 
+/**
+ * Payload PATCH /api/parcelles/{id} — nouveau contour d'une parcelle.
+ *
+ * Une scission manuelle conserve sa ligne en base pour la partie qui garde
+ * l'identité de la parcelle ; le contour, le centre et la superficie la suivent.
+ */
+export interface ParcelGeometryUpdate {
+  coordinates: Array<{ lat: number; lng: number }>;
+  center_lat: number;
+  center_lng: number;
+  surface_ha: number;
+}
+
 /** Création d'une entrée d'audit (journal des actions utilisateurs). */
 export interface AuditEntryCreate {
   user_name: string;
@@ -306,35 +319,35 @@ export interface CreateMaltoParcelPayload {
   center_lng: number;
   surface_ha: number;
   culture_declared: string;
-  culture_detected: null;
-  ndvi_percentage: null;
-  ndre: null;
-  spectral_bands: null;
-  confidence: null;
+  culture_detected: string | null;
+  ndvi_percentage: number | null;
+  ndre: number | null;
+  spectral_bands: Record<string, number | null> | null;
+  confidence: number | null;
   verdict: string;
   details: string;
-  saison: null;
-  soil_type: null;
+  saison: string | null;
+  soil_type: string | null;
   risk_factors: string[];
-  recommendations: null;
+  recommendations: string | null;
   data_source: string;
   owner_name: string;
   notes: string;
   time_series_s2: unknown[];
   time_series_s1: unknown[];
   time_series_rain: unknown[];
-  estimated_planting_date: null;
-  estimated_harvest_date: null;
-  days_since_planting: null;
-  growth_stage: null;
-  planting_confidence: null;
-  evi: null;
-  savi: null;
-  ndwi: null;
-  agro_score: null;
-  hybrid_score: null;
-  cnn_prob_barley: null;
-  cnn_prob_non_barley: null;
+  estimated_planting_date: string | null;
+  estimated_harvest_date: string | null;
+  days_since_planting: number | null;
+  growth_stage: string | null;
+  planting_confidence: number | null;
+  evi: number | null;
+  savi: number | null;
+  ndwi: number | null;
+  agro_score: number | null;
+  hybrid_score: number | null;
+  cnn_prob_barley: number | null;
+  cnn_prob_non_barley: number | null;
 }
 
 /** Payload POST /api/parcelles/analyze — analyse d'une seule parcelle. */
@@ -594,6 +607,14 @@ export const api = {
     async createParcel(payload: CreateMaltoParcelPayload): Promise<Record<string, unknown>> {
       return request<Record<string, unknown>>('/api/parcelles', {
         method: 'POST',
+        body: JSON.stringify(payload),
+      }, 30_000);
+    },
+
+    /** Enregistre le nouveau contour d'une parcelle (scission manuelle). */
+    async updateParcelGeometry(id: string, payload: ParcelGeometryUpdate): Promise<Record<string, unknown>> {
+      return request<Record<string, unknown>>(`/api/parcelles/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
         body: JSON.stringify(payload),
       }, 30_000);
     },

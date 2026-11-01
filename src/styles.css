@@ -623,6 +623,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .borne-info strong { font-size: 14px; }
 .borne-info span { color: var(--ink-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .map.is-placing-borne .gm-style * { cursor: crosshair !important; }
+.map.is-splitting .gm-style * { cursor: crosshair !important; }
 @media (max-width: 720px) {
   .bornecard { top: 92px; max-height: 48vh; }
 }

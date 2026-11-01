@@ -7,6 +7,7 @@ import { CULTURES, CULTURE_BY_ID, ROLES, SEASONS, SEASON_BY_ID } from '../data/c
 import { fmtDate, fmtHa, fmtPct, withoutToolName } from '../lib/format';
 import { isUncertain } from '../lib/filter';
 import { ringAreaHa } from '../lib/geometry';
+import { splitParcelByCut } from '../lib/polygon-split';
 import { PREVIEW_SIZE, previewPolygonPoints } from '../lib/parcel-preview';
 import { isAnalyzedParcel } from '../lib/analysis-parcels';
 import { mapCulture } from '../api/maltoAdapter';
@@ -227,8 +228,13 @@ export default function ParcelDrawer({ onAnalyze, canLaunch }: { onAnalyze?: () 
   const select = useApp((s) => s.select);
   const editingParcelId = useApp((s) => s.editingParcelId);
   const editingCoords = useApp((s) => s.editingCoords);
+  const splitParcelId = useApp((s) => s.splitParcelId);
+  const splitDraft = useApp((s) => s.splitDraft);
   const analyzingParcelId = useApp((s) => s.analyzingParcelId);
-  const { startEditParcel, cancelEditParcel, saveEditParcel } = useApp.getState();
+  const {
+    startEditParcel, cancelEditParcel, saveEditParcel,
+    startSplitParcel, undoSplitPoint, cancelSplitParcel, saveSplitParcel,
+  } = useApp.getState();
   const [modal, setModal] = useState<ModalKind | null>(null);
 // Prop defaults for compatibility with MapToolbar usage
 const analyzeAction = onAnalyze || (() => alert('Analyse non disponible'));
@@ -237,6 +243,12 @@ const launchAllowed = canLaunch !== false;
   const p = useMemo(() => parcels.find((x) => x.id === id), [parcels, id]);
   if (!p) return null;
   const editing = editingParcelId === p.id && !!editingCoords;
+  const splitting = splitParcelId === p.id;
+  // Aperçu calculé à chaque rendu : le tracé doit apparaître/disparaître au fil
+  // des clics, et la scission n'est validable que si les deux parties existent.
+  const splitPreview = splitting ? splitParcelByCut(p.coords, splitDraft) : null;
+  const splitError = splitPreview && !splitPreview.ok ? splitPreview.error : null;
+  const splitParts = splitPreview && splitPreview.ok ? splitPreview.parts : null;
   const r = p.results[seasonId];
   const detail = p.cultureDetail;
   const hasCulture = !!detail || (!!r && r.culture !== 'inconnue');
@@ -274,6 +286,46 @@ const launchAllowed = canLaunch !== false;
             <button className="btn btn--primary" onClick={saveEditParcel}><Check size={14} /> Valider le contour</button>
             <button className="btn" onClick={cancelEditParcel}><X size={14} /> Annuler</button>
           </div>
+        </div>
+      )}
+
+      {splitting && (
+        <div className="editbar" role="region" aria-label="Mode scission de la parcelle">
+          <div className="editbar__head">
+            <b><Split size={14} /> Scinder la parcelle</b>
+            <span className="hint">{splitDraft.length} point{splitDraft.length > 1 ? 's' : ''}</span>
+          </div>
+          <p className="hint">
+            Posez un point sur le contour, ajoutez les sommets qui suivent la limite réelle
+            (talus, chemin, haie), puis terminez sur le bord opposé de la parcelle.
+          </p>
+          {splitParts ? (
+            <dl className="kv">
+              <dt>Parties obtenues</dt>
+              <dd className="big">{splitParts.map((part) => fmtHa(ringAreaHa(part))).join(' + ')}</dd>
+            </dl>
+          ) : splitError ? (
+            <p className="note note--warn">{splitError}</p>
+          ) : (
+            <p className="hint">Deux points au minimum, d’un bord à l’autre de la parcelle.</p>
+          )}
+          <div className="actions">
+            <button
+              className="btn btn--primary"
+              onClick={() => { void saveSplitParcel(); }}
+              disabled={!splitParts}
+            >
+              <Check size={14} /> Valider la scission
+            </button>
+            <button className="btn" onClick={undoSplitPoint} disabled={splitDraft.length === 0}>
+              Dernier point
+            </button>
+            <button className="btn" onClick={cancelSplitParcel}><X size={14} /> Annuler</button>
+          </div>
+          <p className="hint">
+            La partie qui contient le centre garde la culture enregistrée ; l’autre devient un
+            contour sans culture, à analyser.
+          </p>
         </div>
       )}
 
@@ -403,7 +455,14 @@ const launchAllowed = canLaunch !== false;
           {can?.correct && (
             <>
               <button className="btn" disabled title="Fusion de polygones — sera reliée à PostGIS (ST_Union)"><Merge size={14} /> Fusionner</button>
-              <button className="btn" disabled title="Scission de polygone — sera reliée à PostGIS (ST_Split)"><Split size={14} /> Scinder</button>
+              <button
+                className="btn"
+                disabled={editing || splitting}
+                onClick={() => startSplitParcel(p.id)}
+                title="Découper la parcelle en deux en suivant les limites réelles du terrain"
+              >
+                <Split size={14} /> {splitting ? 'Scission en cours…' : 'Scinder'}
+              </button>
               <button className="btn btn--danger" onClick={() => setModal('reject')}><Trash2 size={14} /> Supprimer la parcelle</button>
             </>
           )}

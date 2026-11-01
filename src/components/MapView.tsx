@@ -4,7 +4,8 @@ import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, useApp } from '../store/useApp';
 import { computeStyle } from '../lib/style';
 import { bboxOfAll } from '../lib/geometry';
 import { ROLES } from '../data/constants';
-import type { Parcel } from '../types';
+import { SPLIT_SNAP_TOLERANCE_M, snapToRing, splitParcelByCut } from '../lib/polygon-split';
+import type { LatLng, Parcel } from '../types';
 import { isAnalyzedParcel } from '../lib/analysis-parcels';
 import { GEMINI_OUTLINE_COLOR, parcelOutlineStyle } from '../lib/parcel-outline-style';
 import { isGeminiParcel } from '../lib/parcel-sources';
@@ -83,6 +84,8 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const automaticSearchCenter = useApp((s) => s.automaticSearchCenter);
   const automaticSearchRadius = useApp((s) => s.automaticSearchRadius);
   const editingParcelId = useApp((s) => s.editingParcelId);
+  const splitParcelId = useApp((s) => s.splitParcelId);
+  const splitDraft = useApp((s) => s.splitDraft);
   const geminiCapture = useApp((s) => s.geminiCapture);
   const bornes = useApp((s) => s.bornes);
   const bornePlacement = useApp((s) => s.bornePlacement);
@@ -106,6 +109,9 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const zonePolygon = useRef<google.maps.Polygon | null>(null);
   const zoneMarkers = useRef<google.maps.Marker[]>([]);
   const editMarkers = useRef<google.maps.Marker[]>([]);
+  const splitLine = useRef<google.maps.Polyline | null>(null);
+  const splitMarkers = useRef<google.maps.Marker[]>([]);
+  const splitParts = useRef<google.maps.Polygon[]>([]);
   const searchCenterMarker = useRef<google.maps.Marker | null>(null);
   const searchRadiusCircle = useRef<google.maps.Circle | null>(null);
   const captureRectangle = useRef<google.maps.Rectangle | null>(null);
@@ -169,7 +175,9 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         return;
       }
       infoWindow.current?.close();
-      if (latest.current.drawing && event.latLng) {
+      if (state.splitParcelId && event.latLng) {
+        state.addSplitPoint([event.latLng.lat(), event.latLng.lng()]);
+      } else if (latest.current.drawing && event.latLng) {
         state.addDraftPoint([event.latLng.lat(), event.latLng.lng()]);
       } else if (latest.current.automaticSearchCenter && event.latLng) {
         state.setAutomaticSearchCenter([event.latLng.lat(), event.latLng.lng()]);
@@ -510,6 +518,15 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         }
         if (state.borneDraft) return;
         if (state.drawing) return;
+        // Scission en cours : chaque clic pose un sommet de la coupe, sans
+        // changer de parcelle sélectionnée.
+        if (state.splitParcelId) {
+          if (event.latLng) {
+            event.stop();
+            state.addSplitPoint([event.latLng.lat(), event.latLng.lng()]);
+          }
+          return;
+        }
         // Un contour non classé (tracé manuel, VHR) peut recouvrir une parcelle
         // classée : le clic ouvre alors celle-ci pour afficher sa culture.
         // L'écouteur est créé avec le polygone et n'est pas recréé lors des
@@ -531,7 +548,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       // Double-clic : passe en édition du contour (sommets déplaçables). Droit limité par le rôle.
       polygon.addListener('dblclick', () => {
         const s = useApp.getState();
-        if (s.drawing || s.bornePlacement || s.borneDraft) return;
+        if (s.drawing || s.bornePlacement || s.borneDraft || s.splitParcelId) return;
         if (!s.user || !ROLES[s.user.role].can.correct) {
           s.toast('Votre profil ne permet pas de modifier le contour d’une parcelle.', 'warn');
           return;
@@ -744,6 +761,84 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       editMarkers.current = [];
     };
   }, [map, editingParcelId]);
+
+  // Scission manuelle : ligne de coupe accrochée au contour et aperçu des deux
+  // parties obtenues, pour suivre la limite réelle avant de valider.
+  useEffect(() => {
+    splitLine.current?.setMap(null);
+    splitLine.current = null;
+    splitMarkers.current.forEach((marker) => marker.setMap(null));
+    splitMarkers.current = [];
+    splitParts.current.forEach((layer) => layer.setMap(null));
+    splitParts.current = [];
+    if (!map || !splitParcelId) return;
+    const parcel = latest.current.parcels.get(splitParcelId);
+    if (!parcel) return;
+
+    // Le dernier clic est accroché au contour comme le premier : une coupe se
+    // termine sur la limite de la parcelle, pas à quelques mètres à l'intérieur.
+    const draft = splitDraft.map(([lat, lng]) => [lat, lng] as LatLng);
+    if (draft.length >= 2) {
+      const lastSnap = snapToRing(draft[draft.length - 1], parcel.coords);
+      if (lastSnap && lastSnap.distanceM <= SPLIT_SNAP_TOLERANCE_M) {
+        draft[draft.length - 1] = lastSnap.point;
+      }
+    }
+
+    if (draft.length >= 2) {
+      splitLine.current = new google.maps.Polyline({
+        map,
+        path: draft.map(([lat, lng]) => ({ lat, lng })),
+        strokeColor: '#B60319', strokeOpacity: 1, strokeWeight: 3,
+        clickable: false, zIndex: 1300,
+      });
+    }
+    draft.forEach(([lat, lng], index) => {
+      const end = index === 0 || index === draft.length - 1;
+      splitMarkers.current.push(new google.maps.Marker({
+        map,
+        position: { lat, lng },
+        clickable: false,
+        zIndex: google.maps.Marker.MAX_ZINDEX + 1,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: end ? 7 : 5,
+          fillColor: '#fff', fillOpacity: 1,
+          strokeColor: '#B60319', strokeWeight: end ? 3 : 2,
+        },
+      }));
+    });
+
+    const preview = splitParcelByCut(parcel.coords, draft);
+    if (preview.ok) {
+      for (const part of preview.parts) {
+        splitParts.current.push(new google.maps.Polygon({
+          map,
+          paths: part.map(([lat, lng]) => ({ lat, lng })),
+          strokeColor: '#03793C', strokeOpacity: 1, strokeWeight: 2,
+          fillColor: '#03793C', fillOpacity: 0.12,
+          clickable: false, zIndex: 1250,
+        }));
+      }
+    }
+
+    return () => {
+      splitLine.current?.setMap(null);
+      splitLine.current = null;
+      splitMarkers.current.forEach((marker) => marker.setMap(null));
+      splitMarkers.current = [];
+      splitParts.current.forEach((layer) => layer.setMap(null));
+      splitParts.current = [];
+    };
+  }, [map, splitParcelId, splitDraft, parcels]);
+
+  // Curseur en croix pendant le tracé de la coupe.
+  useEffect(() => {
+    if (!map) return;
+    const div = map.getDiv();
+    div.classList.toggle('is-splitting', !!splitParcelId);
+    return () => div.classList.remove('is-splitting');
+  }, [map, splitParcelId]);
 
   // Afficher/masquer la couverture sans recréer les polygones.
   useEffect(() => {
