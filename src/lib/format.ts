@@ -15,6 +15,11 @@ export function fmtDate(iso: string | null | undefined, withTime = false): strin
   return d.toLocaleDateString('fr-FR', opts);
 }
 
+/** Identifiant abrégé pour l'affichage : les identifiants longs (UUID…) gardent leurs 4 premiers et 4 derniers caractères. */
+export function shortId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 4)}…${id.slice(-4)}` : id;
+}
+
 export const normalize = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
 /**

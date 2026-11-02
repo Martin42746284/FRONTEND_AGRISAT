@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { CULTURES, CULTURE_BY_ID, ROLES, SEASONS, SEASON_BY_ID } from '../data/constants';
-import { fmtDate, fmtHa, fmtPct, withoutToolName } from '../lib/format';
+import { fmtDate, fmtHa, fmtPct, shortId, withoutToolName } from '../lib/format';
 import { isUncertain } from '../lib/filter';
 import { ringAreaHa } from '../lib/geometry';
 import { splitParcelByCut } from '../lib/polygon-split';
@@ -540,7 +540,7 @@ function ParcelModal({ kind, parcel, current, onClose }: {
       footer={<><button className="btn btn--ghost" onClick={onClose}>Annuler</button>
         <button className={`btn ${kind === 'reject' || kind === 'removeCulture' ? 'btn--danger' : 'btn--primary'}`} onClick={save} disabled={busy}>
           {busy ? busyLabel : confirmLabel}</button></>}>
-      <p className="muted">{parcel.id}</p>
+      <p className="muted" title={parcel.id}>{shortId(parcel.id)}</p>
       {kind === 'reject' ? (
         <p>La parcelle et son contour seront supprimés définitivement. Pour ne retirer que la culture, utilisez « Supprimer la culture ». Confirmer ?</p>
       ) : kind === 'removeCulture' ? (

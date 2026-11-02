@@ -42,13 +42,18 @@ export const STATUS_TONE: Record<Status, string> = {
   confirme: 'ok', a_verifier: 'warn',
   non_verifie: 'neutral', verifie_terrain: 'ok', corrige: 'info', incertain: 'warn', obsolete: 'muted',
 };
-/** Couleurs des statuts pour les graphiques (une teinte par niveau de confiance). */
+/**
+ * Couleurs des statuts pour les graphiques (une teinte par niveau de confiance).
+ * Mêmes teintes que la palette de la carte : vert MALTO pour les statuts
+ * confirmés, bleu d'information pour les corrections, ambre et rouge pour les
+ * niveaux à contrôler, gris pour les statuts neutres.
+ */
 export const STATUS_COLOR: Record<Status, string> = {
-  confirme: '#2F7D4F',
-  verifie_terrain: '#0F7F86',
-  corrige: '#3A6EDC',
-  a_verifier: '#D99A1E',
-  incertain: '#C4553F',
+  confirme: '#03793C',
+  verifie_terrain: '#025C2E',
+  corrige: '#2F5BB7',
+  a_verifier: '#A56A00',
+  incertain: '#A3111F',
   non_verifie: '#8A9199',
   obsolete: '#B9C0BE',
 };

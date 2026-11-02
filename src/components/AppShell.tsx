@@ -6,8 +6,8 @@ import { ROLES } from '../data/constants';
 import { activeFilterCount } from '../lib/filter';
 import type { Role } from '../types';
 import ParcelDrawer from './ParcelDrawer';
-import MapToolbar from './MapToolbar';
 import ExportMenu from './ExportMenu';
+import PageHeader from './PageHeader';
 import { Toasts } from './ui';
 
 function UserMenu() {
@@ -80,6 +80,8 @@ export default function AppShell() {
         ))}
       </nav>
 
+      {!onMap && <PageHeader />}
+
       <div className="topright">
         {onMap && (
           <>
@@ -93,7 +95,6 @@ export default function AppShell() {
       </div>
 
       <ParcelDrawer />
-      <MapToolbar canLaunch={can.launch} onAnalyze={() => alert('Analyse non implémentée dans ce layout')} />
       <Toasts />
     </div>
   );

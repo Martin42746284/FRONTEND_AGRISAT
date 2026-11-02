@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, Search, Trash2 } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { useAggregate, useFinal } from '../store/selectors';
 import { CULTURE_BY_ID, ROLES } from '../data/constants';
-import { fmtDate, fmtHa, fmtInt, fmtPct } from '../lib/format';
+import { fmtDate, fmtHa, fmtInt, fmtPct, shortId } from '../lib/format';
 import { bboxOf } from '../lib/geometry';
 import FiltersPanel from '../components/FiltersPanel';
 import ExportMenu from '../components/ExportMenu';
@@ -137,7 +137,7 @@ export default function Parcels() {
                             onClick={(e) => e.stopPropagation()} aria-label={`Sélectionner la parcelle ${p.id}`} />
                         </td>
                       )}
-                      <td><b>{p.id}</b></td>
+                      <td><b title={p.id}>{shortId(p.id)}</b></td>
                       <td>{cname[p.communeId]}</td>
                       <td className="num">{fmtHa(p.areaHa)}</td>
                       <td><Swatch color={colors[r.culture]} /> {CULTURE_BY_ID[r.culture].label}</td>

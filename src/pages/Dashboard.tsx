@@ -10,6 +10,9 @@ import FiltersPanel from '../components/FiltersPanel';
 import ExportMenu from '../components/ExportMenu';
 import { Empty, Swatch } from '../components/ui';
 
+/** Gris de grille et vert d'accent : les mêmes que sur la carte. */
+const GRID = '#E7ECE7';
+const ACCENT = '#03793C';
 const nf = (n: number) => fmtInt(Math.round(n));
 const pct = (v: number, total: number) => (total > 0 ? `${(v / total * 100).toFixed(1).replace('.', ',')} %` : '—');
 type StatusMetric = 'count' | 'area';
@@ -213,7 +216,7 @@ export default function Dashboard() {
                 <div className="chart" style={{ height: Math.max(220, byCulture.length * 30) }}>
                   <ResponsiveContainer>
                     <BarChart data={byCulture} layout="vertical" margin={{ left: 8, right: 24 }}>
-                      <CartesianGrid horizontal={false} stroke="#E3E9E6" />
+                      <CartesianGrid horizontal={false} stroke={GRID} />
                       <XAxis type="number" tickFormatter={nf} fontSize={12} />
                       <YAxis type="category" dataKey="name" width={118} fontSize={12} />
                       <Tooltip formatter={(v: number) => [`${nf(v)} ha`, 'Superficie']} />
@@ -230,7 +233,7 @@ export default function Dashboard() {
                 <div className="chart" style={{ height: 300 }}>
                   <ResponsiveContainer>
                     <BarChart data={byRegion} margin={{ left: 0, right: 8 }}>
-                      <CartesianGrid vertical={false} stroke="#E3E9E6" />
+                      <CartesianGrid vertical={false} stroke={GRID} />
                       <XAxis dataKey="region" fontSize={11} interval={0} />
                       <YAxis tickFormatter={nf} fontSize={12} />
                       <Tooltip formatter={(v: number, k: string) => [`${nf(v)} ha`, CULTURE_BY_ID[k as keyof typeof CULTURE_BY_ID]?.label ?? k]} />
@@ -246,7 +249,7 @@ export default function Dashboard() {
                 <div className="chart" style={{ height: 280 }}>
                   <ResponsiveContainer>
                     <BarChart data={bySeason} margin={{ left: 0, right: 8 }}>
-                      <CartesianGrid vertical={false} stroke="#E3E9E6" />
+                      <CartesianGrid vertical={false} stroke={GRID} />
                       <XAxis dataKey="saison" fontSize={11} interval={0} />
                       <YAxis tickFormatter={nf} fontSize={12} />
                       <Tooltip formatter={(v: number, k: string) => [`${nf(v)} ha`, CULTURE_BY_ID[k as keyof typeof CULTURE_BY_ID]?.label ?? k]} />
@@ -263,11 +266,11 @@ export default function Dashboard() {
                 <div className="chart" style={{ height: 280 }}>
                   <ResponsiveContainer>
                     <BarChart data={hist} margin={{ left: 0, right: 8 }}>
-                      <CartesianGrid vertical={false} stroke="#E3E9E6" />
+                      <CartesianGrid vertical={false} stroke={GRID} />
                       <XAxis dataKey="label" fontSize={11} />
                       <YAxis tickFormatter={nf} fontSize={12} />
                       <Tooltip formatter={(v: number) => [nf(v), 'Parcelles']} />
-                      <Bar dataKey="n" fill="#0F7F86" radius={[3, 3, 0, 0]} />
+                      <Bar dataKey="n" fill={ACCENT} radius={[3, 3, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>

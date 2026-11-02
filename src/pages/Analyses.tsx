@@ -7,7 +7,7 @@ import {
 import { useApp } from '../store/useApp';
 import type { Analysis, AnalysisParcel } from '../types';
 import { PIPELINE_STEPS, ROLES, SEASON_BY_ID } from '../data/constants';
-import { fmtDate, fmtHa, fmtInt, withoutToolName } from '../lib/format';
+import { fmtDate, fmtHa, fmtInt, shortId, withoutToolName } from '../lib/format';
 import { cultureCountsForAnalysis, type AnalysisCultureCounts } from '../lib/analysis-parcels';
 import { AnalysisBadge, Modal } from '../components/ui';
 import NewAnalysisModal from '../components/NewAnalysisModal';
@@ -208,7 +208,7 @@ export default function Analyses() {
 
                       <div className="an-row__main">
                         <div className="an-row__title">
-                          <span className="an-row__id">{a.id}</span>
+                          <span className="an-row__id" title={a.id}>{shortId(a.id)}</span>
                           {a.cached && <span className="tag">cache</span>}
                           <AnalysisBadge status={a.status} />
                         </div>
@@ -279,7 +279,7 @@ export default function Analyses() {
 
       {current && (
         <Modal
-          title={`Analyse ${current.id}`}
+          title={`Analyse ${shortId(current.id)}`}
           onClose={() => setOpen(null)}
           width={760}
           footer={current.zone ? (
@@ -516,7 +516,7 @@ export default function Analyses() {
           </>}
         >
           <p>
-            L'analyse <b>{deletingEntry.id}</b> sera retirée de l'historique
+            L'analyse <b>{shortId(deletingEntry.id)}</b> sera retirée de l'historique
             {deletingEntry.detected?.length
               ? `, et les ${deletingEntry.detected.length} parcelle(s) qu'elle a enregistrées seront supprimées de la base`
               : ''}

@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Check, ClipboardList, Crosshair, Eraser, Home, Layers, Loader2, MapPin, PenTool, Search, Undo2, X, ScanSearch, Camera, Sparkles, Waypoints, Radar, Navigation, ThermometerSun } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { bboxOf, centroidOf, M_PER_DEG_LAT, mPerDegLng, ringAreaHa } from '../lib/geometry';
-import { normalize, withoutToolName } from '../lib/format';
+import { normalize, shortId, withoutToolName } from '../lib/format';
 import { parseCoordinates } from '../lib/coordinates';
 import CaptureProgressOverlay, { type CaptureProgressView } from './CaptureProgressOverlay';
 import {
@@ -1056,7 +1056,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
           return (
             <aside className="automatic-parcel-drawer glass" aria-label="Détails de l’analyse de la parcelle">
               <header className="automatic-parcel-drawer__head">
-                <div><h2>{culture.label}</h2><p>{candidate.id} · {withoutToolName(candidate.tags.source ?? 'détection automatique')}</p></div>
+                <div><h2>{culture.label}</h2><p title={candidate.id}>{shortId(candidate.id)} · {withoutToolName(candidate.tags.source ?? 'détection automatique')}</p></div>
                 <button className="icon-btn" onClick={() => selectAutomaticParcel(null)} aria-label="Fermer les détails"><X size={18} /></button>
               </header>
               <div className="automatic-parcel-drawer__body">
