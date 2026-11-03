@@ -285,6 +285,8 @@ export interface GeminiCapture {
   tiles: number;
   /** Largeur d'une tuile de la mosaïque, en mètres. */
   tile_span_m: number;
+  /** Prétraitement appliqué avant l'analyse : off, light ou strong. */
+  enhancement?: 'off' | 'light' | 'strong' | string;
   bounds: { south: number; west: number; north: number; east: number };
   /** Image satellite capturée, en data URL PNG. */
   image_data_url: string;

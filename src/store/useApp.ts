@@ -116,6 +116,8 @@ interface State {
   colorsByUser: Record<string, Record<CultureId, string>>;
   threshold: number;
   basemap: 'plan' | 'satellite';
+  /** Renforce contraste et saturation de l'imagerie pour lire les limites peu visibles. */
+  readability: boolean;
   showCoverage: boolean;
 
   filters: Filters;
@@ -223,6 +225,7 @@ interface State {
   resetColors: () => void;
   setThreshold: (v: number) => void;
   setBasemap: (b: 'plan' | 'satellite') => void;
+  setReadability: (v: boolean) => void;
   setShowCoverage: (v: boolean) => void;
   select: (id: string | null) => void;
   flyTo: (t: Omit<FlyTarget, 'nonce'>) => void;
@@ -285,6 +288,7 @@ export const useApp = create<State>()(
       colorsByUser: {},
       threshold: 0.55,
       basemap: 'satellite',
+      readability: false,
       showCoverage: true,
       filters: DEFAULT_FILTERS,
       selectedId: null,
@@ -457,6 +461,7 @@ export const useApp = create<State>()(
         })),
       setThreshold: (v) => set({ threshold: v }),
       setBasemap: (b) => set({ basemap: b }),
+      setReadability: (v) => set({ readability: v }),
       setShowCoverage: (v) => set({ showCoverage: v }),
       // Changer de sélection (ou fermer la fiche) met fin à une édition ou à une
       // scission en cours.
@@ -1368,15 +1373,15 @@ export const useApp = create<State>()(
       name: 'agri-mada-v1',
       version: 4,
       migrate: (persistedState) => ({
-        ...(persistedState as Pick<State, 'user' | 'colors' | 'colorsByUser' | 'threshold' | 'showCoverage'>),
+        ...(persistedState as Pick<State, 'user' | 'colors' | 'colorsByUser' | 'threshold' | 'readability' | 'showCoverage'>),
         rejectedParcels: (persistedState as Partial<State>).rejectedParcels ?? [],
         captureHistory: (persistedState as Partial<State>).captureHistory ?? [],
         basemap: 'satellite' as const,
       }),
       partialize: (s) => ({
         user: s.user, colors: s.colors, colorsByUser: s.colorsByUser, threshold: s.threshold,
-        basemap: s.basemap, showCoverage: s.showCoverage, rejectedParcels: s.rejectedParcels,
-        captureHistory: s.captureHistory,
+        basemap: s.basemap, readability: s.readability, showCoverage: s.showCoverage,
+        rejectedParcels: s.rejectedParcels, captureHistory: s.captureHistory,
       }),
     },
   ),

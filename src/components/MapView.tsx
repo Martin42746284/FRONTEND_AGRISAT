@@ -77,6 +77,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   // franchissement d'un palier, pas à chaque cran de molette.
   const zoomBoost = strokeBoostForZoom(mapZoom);
   const basemap = useApp((s) => s.basemap);
+  const readability = useApp((s) => s.readability);
   const showCoverage = useApp((s) => s.showCoverage);
   const fly = useApp((s) => s.fly);
   const drawing = useApp((s) => s.drawing);
@@ -1030,7 +1031,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   return (
     <GoogleMap
       mapContainerStyle={MAP_CONTAINER_STYLE}
-      mapContainerClassName="map"
+      mapContainerClassName={`map${readability ? ' map--readable' : ''}`}
       center={center}
       zoom={DEFAULT_MAP_ZOOM}
       options={mapOptions}

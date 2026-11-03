@@ -597,6 +597,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* carte plein écran */
 .page--map { display: block; }
 .map { position: absolute; inset: 0; background: #E3E8E1; } .map.is-drawing { cursor: crosshair; }
+/* Lisibilité : contraste et saturation uniquement sur les tuiles satellite,
+   jamais sur les contours, bornes et étiquettes (ce sont des overlays). */
+.map--readable .gm-style img[src*="khms"],
+.map--readable .gm-style img[src*="google.com/vt"],
+.map--readable .gm-style img[src*="googleapis.com/vt"] {
+  filter: contrast(1.16) saturate(1.28) brightness(1.03);
+}
 .map-message { display: grid; place-items: center; padding: 24px; color: var(--ink-2); background: var(--mist); text-align: center; }
 .parambar { position: absolute; z-index: 800; top: 12px; left: 420px; right: 320px; width: auto; max-width: 900px; min-width: 0; max-height: calc(100dvh - 110px); overflow: auto; padding: 8px 12px; display: grid; gap: 8px; box-shadow: inset 0 2px 0 0 var(--brand-red), 0 6px 22px rgba(22,35,30,.16); }
 .parambar__chips { min-width: 0; }

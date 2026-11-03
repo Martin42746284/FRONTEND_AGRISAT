@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Check, ClipboardList, Crosshair, Eraser, Home, Layers, Loader2, MapPin, PenTool, Search, Undo2, X, ScanSearch, Camera, Sparkles, Waypoints, Radar, Navigation, ThermometerSun } from 'lucide-react';
+import { Check, ClipboardList, Contrast, Crosshair, Eraser, Home, Layers, Loader2, MapPin, PenTool, Search, Undo2, X, ScanSearch, Camera, Sparkles, Waypoints, Radar, Navigation, ThermometerSun } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { bboxOf, centroidOf, M_PER_DEG_LAT, mPerDegLng, ringAreaHa } from '../lib/geometry';
 import { normalize, shortId, withoutToolName } from '../lib/format';
@@ -76,6 +76,8 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const flyTo = useApp((s) => s.flyTo);
   const basemap = useApp((s) => s.basemap);
   const setBasemap = useApp((s) => s.setBasemap);
+  const readability = useApp((s) => s.readability);
+  const setReadability = useApp((s) => s.setReadability);
   const showCoverage = useApp((s) => s.showCoverage);
   const setShowCoverage = useApp((s) => s.setShowCoverage);
   const drawing = useApp((s) => s.drawing);
@@ -826,6 +828,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
           </div>
           <button className="tool" data-tip="Vue nationale" aria-label="Retour à l'emprise nationale" onClick={() => flyTo({ bounds: NATIONAL })}><Home size={18} /></button>
           <button className={`tool ${basemap === 'satellite' ? 'tool--on' : ''}`} data-tip={basemap === 'plan' ? 'Fond satellite' : 'Fond plan'} aria-label="Basculer plan / satellite" onClick={() => setBasemap(basemap === 'plan' ? 'satellite' : 'plan')}><Layers size={18} /></button>
+          <button className={`tool ${readability ? 'tool--on' : ''}`} data-tip={readability ? 'Lisibilité renforcée : activée' : 'Renforcer la lisibilité de l’image satellite'} aria-label="Renforcer la lisibilité de l’image satellite" aria-pressed={readability} onClick={() => setReadability(!readability)}><Contrast size={18} /></button>
           <button className={`tool ${showCoverage ? 'tool--on' : ''}`} data-tip="Couverture des analyses" aria-label="Afficher la couverture des analyses" onClick={() => setShowCoverage(!showCoverage)}><Crosshair size={18} /></button>
           {onMapPage && !drawing && (
             <button
