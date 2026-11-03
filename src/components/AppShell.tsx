@@ -25,7 +25,7 @@ function UserMenu() {
   const initials = user.name.split(' ').map((w) => w[0]).slice(0, 2).join('');
   return (
     <div className="menu" ref={ref}>
-      <button className="avatar glass" onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open} aria-label="Menu utilisateur">{initials}</button>
+      <button className="avatar" onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open} aria-label="Menu utilisateur">{initials}</button>
       {open && (
         <div className="menu__list glass" role="menu">
           <div className="menu__who"><b>{user.name}</b><span>{ROLES[user.role].label}</span></div>

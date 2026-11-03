@@ -7,7 +7,7 @@ import { ROLES } from '../data/constants';
 import { SPLIT_SNAP_TOLERANCE_M, snapToRing, splitParcelByCut } from '../lib/polygon-split';
 import type { LatLng, Parcel } from '../types';
 import { isAnalyzedParcel } from '../lib/analysis-parcels';
-import { GEMINI_OUTLINE_COLOR, parcelOutlineStyle } from '../lib/parcel-outline-style';
+import { GEMINI_OUTLINE_COLOR, parcelOutlineStyle, strokeBoostForZoom } from '../lib/parcel-outline-style';
 import { isGeminiParcel } from '../lib/parcel-sources';
 import { pickParcelAt } from '../lib/parcel-selection';
 import { candidateCulture, parcelForCandidate, parcelShowsCandidateCulture } from '../lib/candidate-parcel';
@@ -72,6 +72,10 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const colors = useApp((s) => s.colors);
   const threshold = useApp((s) => s.threshold);
   const selectedId = useApp((s) => s.selectedId);
+  const mapZoom = useApp((s) => s.mapZoom);
+  // Paliers de zoom : le rendu des 4 000 contours n'est recalculé qu'au
+  // franchissement d'un palier, pas à chaque cran de molette.
+  const zoomBoost = strokeBoostForZoom(mapZoom);
   const basemap = useApp((s) => s.basemap);
   const showCoverage = useApp((s) => s.showCoverage);
   const fly = useApp((s) => s.fly);
@@ -100,6 +104,10 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
 
   const parcelLayers = useRef(new Map<string, google.maps.Polygon>());
   const onMap = useRef(new Set<string>());
+  /** Halo unique sous les parcelles : les anneaux de tous les contours visibles. */
+  const casingLayer = useRef<google.maps.Polygon | null>(null);
+  /** Signature des anneaux déjà posés, pour éviter de reconstruire la géométrie. */
+  const casingKey = useRef<string | null>(null);
   const regionLayers = useRef<google.maps.Polygon[]>([]);
   const communeLayers = useRef<google.maps.Polygon[]>([]);
   const automaticLayers = useRef<google.maps.Polygon[]>([]);
@@ -634,10 +642,37 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
     };
   }, [automaticDetection, map, colors, parcels, baseIds, f.seasonId]);
 
+  // Halo des contours : un seul polygone multi-anneaux, plus large et sombre,
+  // glissé sous les parcelles. Un halo par parcelle doublerait le nombre
+  // d'overlays (jusqu'à ~8 000) ; un overlay unique ne coûte qu'un tracé
+  // supplémentaire par anneau et détache les traits de l'imagerie satellite.
+  useEffect(() => {
+    if (!map) return;
+    const casing = new google.maps.Polygon({
+      map,
+      strokeColor: '#0B1711',
+      strokeOpacity: 0.5,
+      strokeWeight: 3.6,
+      fillOpacity: 0,
+      clickable: false,
+      zIndex: 4,
+    });
+    casingLayer.current = casing;
+    casingKey.current = null;
+    return () => {
+      casing.setMap(null);
+      if (casingLayer.current === casing) casingLayer.current = null;
+      casingKey.current = null;
+    };
+  }, [map]);
+
   // Visibilité et styles : aucun nouveau calcul IA lors d’un changement de filtre.
   useEffect(() => {
     if (!map) return;
-    const context = { colors, threshold, mode: f.mode, cultures: new Set(f.cultures), othersStyle: f.othersStyle };
+    const context = { colors, threshold, mode: f.mode, cultures: new Set(f.cultures), othersStyle: f.othersStyle, zoom: mapZoom };
+    // Anneaux des contours réellement affichés : le halo ne doit pas révéler
+    // une parcelle masquée par un filtre.
+    const visibleRings: { id: string; area: number; coords: Parcel['coords'] }[] = [];
     for (const parcel of parcels) {
       const polygon = parcelLayers.current.get(parcel.id);
       if (!polygon) continue;
@@ -648,6 +683,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
           polygon.setMap(map);
           onMap.current.add(parcel.id);
         }
+        visibleRings.push({ id: parcel.id, area: parcel.areaHa, coords: parcel.coords });
         continue;
       }
       const result = parcel.results[f.seasonId];
@@ -694,10 +730,10 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
           fillOpacity: 0,
           strokeColor: GEMINI_OUTLINE_COLOR,
           strokeOpacity: 1,
-          strokeWeight: parcel.id === selectedId ? 3 : 2,
+          strokeWeight: (parcel.id === selectedId ? 3 : 2) + zoomBoost * 0.6,
         }
         : isVhrOutline
-          ? parcelOutlineStyle(parcel, parcel.id === selectedId)
+          ? parcelOutlineStyle(parcel, parcel.id === selectedId, mapZoom)
           : {
             fillColor: options.fillColor,
             fillOpacity: options.fillOpacity,
@@ -710,8 +746,29 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
         polygon.setMap(map);
         onMap.current.add(parcel.id);
       }
+      visibleRings.push({ id: parcel.id, area: parcel.areaHa, coords: parcel.coords });
     }
-  }, [map, parcels, baseIds, f.mode, f.cultures, f.othersStyle, f.seasonId, colors, threshold, selectedId, editingParcelId]);
+
+    // Géométrie du halo : reconstruite seulement quand l'ensemble visible (ou
+    // un contour) change ; sinon seul le poids de trait est réajusté.
+    const casing = casingLayer.current;
+    if (casing) {
+      const key = visibleRings.map((ring) => `${ring.id}:${ring.area.toFixed(2)}:${ring.coords.length}`).join('|');
+      if (!visibleRings.length) {
+        casingKey.current = '';
+        casing.setMap(null);
+      } else {
+        if (key !== casingKey.current) {
+          casingKey.current = key;
+          casing.setPaths(visibleRings.map((ring) => ring.coords.map(([lat, lng]) => ({ lat, lng }))));
+        }
+        casing.setOptions({ strokeWeight: 3.6 + zoomBoost, map });
+      }
+    }
+    // `mapZoom` n'est volontairement pas une dépendance : les poids ne changent
+    // qu'aux paliers de `zoomBoost`, on évite de restyler 4 000 contours à
+    // chaque cran de zoom.
+  }, [map, parcels, baseIds, f.mode, f.cultures, f.othersStyle, f.seasonId, colors, threshold, selectedId, editingParcelId, zoomBoost]);
 
   // Mode édition : le contour reste visible, surmonté, et ses sommets deviennent déplaçables.
   useEffect(() => {
