@@ -517,12 +517,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .shell { position: relative; height: 100%; overflow: hidden; }
 .shell__page { position: absolute; inset: 0; }
 .page { position: absolute; inset: 0; display: flex; min-height: 0; }
-.page--cols, .page--single { padding: 72px 12px 0 92px; }
+.page--cols, .page--single { padding: 68px 12px 0 82px; }
 .page--cols .content, .page--single .content { overflow: auto; }
 .page--cols .filters { position: static; width: 290px; flex: none; background: #fff; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 1px 2px rgba(18,38,43,.04); margin: 0 12px 12px 0; overflow: auto; padding: 14px 16px 24px; }
 .filters section { padding: 12px 0; border-bottom: 1px solid var(--line-2); } .filters section:last-child { border: 0; }
 .filters__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 6px; } .filters__head h2 { margin: 0 auto 0 0; font-size: 16px; }
-.filters--float { position: absolute; z-index: 850; top: 72px; left: 92px; width: 320px; max-height: calc(100% - 140px); overflow: auto; padding: 12px 16px 20px; box-shadow: inset 0 2px 0 0 var(--brand-red), 0 6px 22px rgba(22,35,30,.16); }
+.filters--float { position: absolute; z-index: 850; top: 68px; left: 82px; width: 320px; max-height: calc(100% - 140px); overflow: auto; padding: 12px 16px 20px; box-shadow: inset 0 2px 0 0 var(--brand-red), 0 6px 22px rgba(22,35,30,.16); }
 
 /* Logo MALTO : image panoramique (865 × 289) posée sur un fond verre flouté.
    Hauteur fixe, largeur au rapport de l'image (aucune déformation).
@@ -920,7 +920,7 @@ body[data-drawer="open"] .maptools--search .searchpop { right: calc(100% + var(-
 body[data-drawer="open"] .maptools--autosearch.maptools--search .searchpop {
   right: calc(100% + var(--drawer) + 24px + min(360px, calc(100vw - 32px)) + 8px);
 }
-.drawer { position: fixed; z-index: 1000; top: 76px; right: 76px; bottom: 12px; width: var(--drawer); background: rgba(252,253,251,.97); border: 1px solid var(--line); border-radius: 14px; box-shadow: inset 0 2px 0 0 var(--brand-red), 0 8px 30px rgba(22,35,30,.22); display: flex; flex-direction: column; overflow: hidden; }
+.drawer { position: fixed; z-index: 1000; top: 68px; right: 16px; bottom: 12px; width: var(--drawer); background: rgba(252,253,251,.97); border: 1px solid var(--line); border-radius: 14px; box-shadow: inset 0 2px 0 0 var(--brand-red), 0 8px 30px rgba(22,35,30,.22); display: flex; flex-direction: column; overflow: hidden; }
 .menu__list.glass { z-index: 1100; }
 
 @media (max-width: 1180px) {
@@ -947,7 +947,7 @@ body[data-drawer="open"] .maptools--autosearch.maptools--search .searchpop {
     left: 10px; right: 10px; max-height: calc(32dvh - 84px);
   }
   body[data-filters="open"] .parambar { display: none; }
-  .page--cols, .page--single { padding: 72px 8px 84px 8px; } .page--cols { flex-direction: column; overflow: auto; } .page--cols .filters { width: auto; margin: 0 0 10px; max-height: 260px; flex: none; } .page--cols .content { overflow: visible; }
+  .page--cols, .page--single { padding: 68px 8px 84px 8px; } .page--cols { flex-direction: column; overflow: auto; } .page--cols .filters { width: auto; margin: 0 0 10px; max-height: 260px; flex: none; } .page--cols .content { overflow: visible; }
   .filters--float { left: 10px; right: 10px; width: auto; top: 72px; max-height: calc(100% - 160px); z-index: 1200; }
   .legend { left: 10px; bottom: 108px; width: 210px; max-height: 30%; } .mapnote { left: 10px; right: 10px; bottom: 76px; } .maptools { bottom: 190px; right: 10px; }
   .drawer { top: auto; height: 68%; right: 0; left: 0; width: auto; border-radius: 14px 14px 0 0; }

@@ -77,7 +77,7 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   // franchissement d'un palier, pas à chaque cran de molette.
   const zoomBoost = strokeBoostForZoom(mapZoom);
   const basemap = useApp((s) => s.basemap);
-  const readability = useApp((s) => s.readability);
+
   const showCoverage = useApp((s) => s.showCoverage);
   const fly = useApp((s) => s.fly);
   const drawing = useApp((s) => s.drawing);
@@ -89,6 +89,9 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   const automaticSearchCenter = useApp((s) => s.automaticSearchCenter);
   const automaticSearchRadius = useApp((s) => s.automaticSearchRadius);
   const editingParcelId = useApp((s) => s.editingParcelId);
+  // Lisibilité renforcée automatique : satellite à l'échelle de la parcelle
+  // (zoom >= 15), ou pendant le tracé / l'édition d'un contour.
+  const readability = basemap === 'satellite' && (mapZoom >= 15 || drawing || !!editingParcelId);
   const splitParcelId = useApp((s) => s.splitParcelId);
   const splitDraft = useApp((s) => s.splitDraft);
   const geminiCapture = useApp((s) => s.geminiCapture);
