@@ -167,6 +167,42 @@ export interface Analysis {
   detected?: AnalysisParcel[];
 }
 
+/**
+ * Culture retenue par une recherche automatique (Orge / Autre culture), telle
+ * qu'enregistrée dans l'historique dédié de la page « Analyses ».
+ *
+ * `parcelId` référence la parcelle en base : retirer cette ligne d'historique
+ * ne supprime ni la parcelle ni sa culture.
+ */
+export interface AutomaticSearchCulture {
+  parcelId: string;
+  /** Identifiant court affiché dans l'historique. */
+  label: string;
+  areaHa: number;
+  culture: 'orge' | 'autre';
+  cultureLabel: string;
+  /** Confiance du modèle, en %, quand elle est fournie. */
+  confidence: number | null;
+}
+
+/** Recherche automatique de cultures consignée dans son propre historique. */
+export interface AutomaticSearchEntry {
+  id: string;
+  createdAt: string;
+  createdBy: string;
+  center: LatLng;
+  radiusM: number;
+  baseTemperature: number;
+  threshold: number;
+  periodDays: number;
+  /** Parcelles examinées et parcelles effectivement analysées. */
+  candidates: number;
+  analyzed: number;
+  alreadyAnalyzed: number;
+  cultures: AutomaticSearchCulture[];
+  notice: string | null;
+}
+
 export interface Filters {
   cultures: CultureId[];
   mode: DisplayMode;

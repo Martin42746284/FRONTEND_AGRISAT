@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type {
-  Analysis, AnalysisParcel, AuditEntry, BorneGps, Commune, CropResult, CultureId, Filters, LatLng, Parcel, Region, Role,
+  Analysis, AnalysisParcel, AuditEntry, AutomaticSearchEntry, BorneGps, Commune, CropResult, CultureId, Filters, LatLng, Parcel, Region, Role,
   SearchedLocation, User,
 } from '../types';
 import { AREA_MAX, CULTURE_BY_ID, DEFAULT_COLORS, DEFAULT_SEASON, PIPELINE_STEPS, CURRENT_MODEL, ROLES } from '../data/constants';
@@ -54,6 +54,9 @@ export interface GeminiCaptureArea {
 
 /** Nombre maximal de captures conservées dans l'historique local (page « Analyses »). */
 export const MAX_CAPTURE_HISTORY = 40;
+
+/** Nombre maximal de recherches automatiques conservées dans l'historique dédié. */
+export const MAX_AUTOMATIC_SEARCH_HISTORY = 30;
 
 /** Données d'une analyse de terrain à consigner dans l'historique. */
 export interface CaptureAnalysisInput {
@@ -193,6 +196,22 @@ interface State {
   /** Rayon de l'analyse automatique, en mètres : il définit la zone affichée sur la carte. */
   automaticSearchRadius: number | null;
   selectedAutomaticParcelId: string | null;
+  /** Historique des recherches automatiques de cultures (Orge / Autre culture). */
+  automaticSearches: AutomaticSearchEntry[];
+  /** Consigne une recherche automatique terminée dans son historique dédié. */
+  recordAutomaticSearch: (input: Omit<AutomaticSearchEntry, 'id' | 'createdAt' | 'createdBy'>) => void;
+  /**
+   * Retire une culture de l'historique des recherches automatiques.
+   * Seule la ligne d'historique est supprimée : la parcelle, son contour et sa
+   * culture en base restent intacts, et l'historique Gemini n'est jamais touché.
+   */
+  deleteAutomaticSearchCulture: (searchId: string, parcelId: string) => void;
+  /**
+   * Vide réellement l'historique des recherches automatiques (toutes les entrées
+   * sont retirées de l'état persistant). Parcelles, cultures en base et
+   * historique des analyses Gemini ne sont pas modifiés.
+   */
+  clearAutomaticSearches: () => void;
 
   /** Édition du contour d'une parcelle (double-clic sur la parcelle dans la carte). */
   editingParcelId: string | null;
@@ -356,6 +375,7 @@ export const useApp = create<State>()(
       automaticSearchCenter: null,
       automaticSearchRadius: null,
       selectedAutomaticParcelId: null,
+      automaticSearches: [],
       editingParcelId: null,
       editingCoords: null,
       splitParcelId: null,
@@ -764,6 +784,49 @@ export const useApp = create<State>()(
       setAutomaticSearchCenter: (center) => set({ automaticSearchCenter: center }),
       setAutomaticSearchRadius: (radiusM) => set({ automaticSearchRadius: radiusM }),
       selectAutomaticParcel: (id) => set({ selectedAutomaticParcelId: id }),
+
+      recordAutomaticSearch: (input) => {
+        const s = get();
+        const entry: AutomaticSearchEntry = {
+          ...input,
+          id: `AR-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          createdAt: new Date().toISOString(),
+          createdBy: s.user?.name ?? '—',
+        };
+        set({ automaticSearches: [entry, ...s.automaticSearches].slice(0, MAX_AUTOMATIC_SEARCH_HISTORY) });
+        s.logAudit('Recherche automatique', `${input.cultures.length} culture(s) consignée(s)`);
+      },
+
+      deleteAutomaticSearchCulture: (searchId, parcelId) => {
+        const s = get();
+        const entry = s.automaticSearches.find((search) => search.id === searchId);
+        const culture = entry?.cultures.find((line) => line.parcelId === parcelId);
+        if (!entry || !culture) {
+          s.toast('Culture introuvable dans cet historique.', 'warn');
+          return;
+        }
+        set({
+          automaticSearches: s.automaticSearches.map((search) => search.id !== searchId
+            ? search
+            : { ...search, cultures: search.cultures.filter((line) => line.parcelId !== parcelId) }),
+        });
+        get().logAudit('Suppression d’une culture (recherche automatique)', `Parcelle ${parcelId}`);
+        get().toast('Culture retirée de l’historique — la parcelle et ses données sont conservées.', 'ok');
+      },
+
+      clearAutomaticSearches: () => {
+        const s = get();
+        if (!s.automaticSearches.length) {
+          s.toast('Aucune recherche automatique à supprimer.', 'info');
+          return;
+        }
+        set({ automaticSearches: [] });
+        get().logAudit(
+          'Suppression de l’historique des recherches automatiques',
+          `${s.automaticSearches.length} recherche(s) supprimée(s)`,
+        );
+        get().toast('Historique des recherches automatiques supprimé — les parcelles et leurs cultures sont conservées.', 'ok');
+      },
 
       toast: (msg, tone = 'info') => {
         const id = toastSeq++;
@@ -1383,17 +1446,19 @@ export const useApp = create<State>()(
     }),
     {
       name: 'agri-mada-v1',
-      version: 4,
+      version: 5,
       migrate: (persistedState) => ({
         ...(persistedState as Pick<State, 'user' | 'colors' | 'colorsByUser' | 'threshold' | 'readability' | 'showCoverage'>),
         rejectedParcels: (persistedState as Partial<State>).rejectedParcels ?? [],
         captureHistory: (persistedState as Partial<State>).captureHistory ?? [],
+        automaticSearches: (persistedState as Partial<State>).automaticSearches ?? [],
         basemap: 'satellite' as const,
       }),
       partialize: (s) => ({
         user: s.user, colors: s.colors, colorsByUser: s.colorsByUser, threshold: s.threshold,
         basemap: s.basemap, readability: s.readability, showCoverage: s.showCoverage,
         rejectedParcels: s.rejectedParcels, captureHistory: s.captureHistory,
+        automaticSearches: s.automaticSearches,
       }),
     },
   ),

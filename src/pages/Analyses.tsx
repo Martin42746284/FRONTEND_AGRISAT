@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Activity, AlertTriangle, CalendarDays, Check, CheckCircle2, Circle, CircleDot,
-  ClipboardList, Clock3, Loader2, MapPin, Plus, RotateCcw, ScanSearch, Trash2, UserRound,
+  AlertTriangle, Check, ChevronDown, Circle, CircleDot, ClipboardList, Loader2, MapPin, Plus,
+  RotateCcw, ScanSearch, Sprout, Trash2, UserRound,
 } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import type { Analysis, AnalysisParcel } from '../types';
@@ -45,26 +45,48 @@ function CultureCounts({ counts, variant = 'inline' }: {
   );
 }
 
+/** Une analyse terminée n'a plus d'avancement à afficher. */
+const isFinished = (status: Analysis['status']) =>
+  status === 'terminee' || status === 'terminee_avertissements';
+
+type Tab = 'gemini' | 'auto';
+
 export default function Analyses() {
   const analyses = useApp((s) => s.analyses);
   const user = useApp((s) => s.user)!;
   const parcels = useApp((s) => s.parcels);
+  const colors = useApp((s) => s.colors);
   const relaunch = useApp((s) => s.relaunchAnalysis);
   const deleteAnalysisHistory = useApp((s) => s.deleteAnalysisHistory);
   const analyzeCultures = useApp((s) => s.analyzeAnalysisCultures);
   const cultureJob = useApp((s) => s.cultureAnalysisJob);
+  const automaticSearches = useApp((s) => s.automaticSearches);
+  const deleteAutomaticSearchCulture = useApp((s) => s.deleteAutomaticSearchCulture);
+  const clearAutomaticSearches = useApp((s) => s.clearAutomaticSearches);
+  const toast = useApp((s) => s.toast);
   const flyTo = useApp((s) => s.flyTo);
   const select = useApp((s) => s.select);
   const navigate = useNavigate();
+  const [tab, setTab] = useState<Tab>('gemini');
   const [open, setOpen] = useState<string | null>(null);
+  const [openAuto, setOpenAuto] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [confirm, setConfirm] = useState<string | null>(null);
   /** Analyse dont la suppression attend confirmation. */
   const [deleting, setDeleting] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  /** Suppression de tout l'historique automatique, en attente de confirmation. */
+  const [clearing, setClearing] = useState(false);
+  /** Culture d'une recherche automatique dont le retrait attend confirmation. */
+  const [deletingCulture, setDeletingCulture] = useState<{ searchId: string; parcelId: string } | null>(null);
   const can = ROLES[user.role].can;
   const current = analyses.find((a) => a.id === open);
   const deletingEntry = deleting ? analyses.find((a) => a.id === deleting) : undefined;
+  const deletingCultureLine = deletingCulture
+    ? automaticSearches
+      .find((search) => search.id === deletingCulture.searchId)
+      ?.cultures.find((line) => line.parcelId === deletingCulture.parcelId)
+    : undefined;
 
   /** Supprime l'analyse de l'historique et les parcelles qu'elle a créées. */
   const confirmDelete = async () => {
@@ -75,6 +97,32 @@ export default function Analyses() {
     if (!removed) return;
     if (open === deleting) setOpen(null);
     setDeleting(null);
+  };
+
+  /** Retire une culture de l'historique des recherches automatiques, sans toucher aux parcelles. */
+  const confirmRemoveCulture = () => {
+    if (!deletingCulture) return;
+    deleteAutomaticSearchCulture(deletingCulture.searchId, deletingCulture.parcelId);
+    setDeletingCulture(null);
+  };
+
+  /** Localise sur la carte la parcelle portant une culture de l'historique. */
+  const showCultureOnMap = (parcelId: string) => {
+    const parcel = parcels.find((p) => p.id === parcelId);
+    if (!parcel) {
+      toast('Cette parcelle n’est plus disponible sur la carte.', 'warn');
+      return;
+    }
+    select(parcel.id);
+    flyTo({ center: parcel.centroid, zoom: 18 });
+    navigate('/carte');
+  };
+
+  /** Vide l'historique des recherches automatiques, sans toucher aux parcelles. */
+  const confirmClearAll = () => {
+    clearAutomaticSearches();
+    setOpenAuto(null);
+    setClearing(false);
   };
 
   const counts = analyses.reduce<Record<string, number>>((m, a) => ((m[a.status] = (m[a.status] ?? 0) + 1), m), {});
@@ -91,6 +139,7 @@ export default function Analyses() {
   const warningCount = counts.terminee_avertissements ?? 0;
   const failures = counts.echec ?? 0;
   const followedParcels = analyses.reduce((sum, a) => sum + (a.parcelCount ?? a.detected?.length ?? 0), 0);
+  const autoCultureTotal = automaticSearches.reduce((sum, entry) => sum + entry.cultures.length, 0);
 
   /** Ouvre la carte sur la zone analysée (ou sur une parcelle détectée). */
   const showOnMap = (analysis: Analysis, parcel?: AnalysisParcel) => {
@@ -110,170 +159,318 @@ export default function Analyses() {
   return (
     <div className="page page--single">
       <div className="content content--wide">
-        <header className="an-hero">
+        <header className="an-head">
           <div>
-            <span className="an-hero__eyebrow"><ClipboardList size={14} /> Suivi des traitements</span>
             <h1>Analyses</h1>
-            <p className="an-hero__sub">
+            <p className="an-head__sub">
               Pilotez vos analyses de terrain, suivez leur avancement et consultez les résultats culturaux.
             </p>
           </div>
-          {can.launch && (
-            <button className="btn an-hero__cta" onClick={() => setCreating(true)}>
+          {can.launch && tab === 'gemini' && (
+            <button className="btn btn--primary" onClick={() => setCreating(true)}>
               <Plus size={15} /> Nouvelle analyse
             </button>
           )}
         </header>
 
-        {analyses.length === 0 ? (
-          <div className="an-empty">
-            <span className="an-empty__icon"><ClipboardList size={26} /></span>
-            <strong>Aucune analyse enregistrée</strong>
-            <p>
-              Lancez une détection de parcelles depuis la carte : la capture, les parcelles détectées
-              et la zone analysée seront consignées ici.
-            </p>
-          </div>
-        ) : (
-          <>
-            <section className="an-kpis" aria-label="Synthèse des analyses">
-              <article className="an-kpi an-kpi--total">
-                <span className="an-kpi__icon"><ClipboardList size={19} /></span>
-                <div className="an-kpi__body">
-                  <span className="an-kpi__label">Analyses</span>
-                  <b className="an-kpi__value">{fmtInt(analyses.length)}</b>
-                  <span className="an-kpi__hint">{fmtInt(followedParcels)} parcelles suivies</span>
+        <div className="an-tabs" role="tablist" aria-label="Historiques">
+          <button
+            type="button"
+            role="tab"
+            id="an-tab-gemini"
+            aria-selected={tab === 'gemini'}
+            aria-controls="an-tabpanel-gemini"
+            className={`an-tab ${tab === 'gemini' ? 'is-active' : ''}`}
+            onClick={() => setTab('gemini')}
+          >
+            <ScanSearch size={14} />
+            Analyse Gemini
+            <span className="an-tab__count">{fmtInt(analyses.length)}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="an-tab-auto"
+            aria-selected={tab === 'auto'}
+            aria-controls="an-tabpanel-auto"
+            className={`an-tab ${tab === 'auto' ? 'is-active' : ''}`}
+            onClick={() => setTab('auto')}
+          >
+            <Sprout size={14} />
+            Recherche automatique
+            <span className="an-tab__count">{fmtInt(automaticSearches.length)}</span>
+          </button>
+        </div>
+
+        {tab === 'gemini' && (
+          <div className="an-tabs__panel" role="tabpanel" id="an-tabpanel-gemini" aria-labelledby="an-tab-gemini">
+            {analyses.length > 0 && (
+              <section className="an-summary" aria-label="Synthèse des analyses Gemini">
+                <div className="an-summary__item">
+                  <span className="an-summary__label">Analyses Gemini</span>
+                  <b className="an-summary__value">{fmtInt(analyses.length)}</b>
+                  <span className="an-summary__hint">{fmtInt(followedParcels)} parcelles suivies</span>
                 </div>
-              </article>
-              <article className="an-kpi an-kpi--info">
-                <span className="an-kpi__icon"><Activity size={19} /></span>
-                <div className="an-kpi__body">
-                  <span className="an-kpi__label">En cours</span>
-                  <b className="an-kpi__value">{fmtInt(running)}</b>
-                  <span className="an-kpi__hint">{waiting ? `${fmtInt(waiting)} en attente` : 'Aucune file d’attente'}</span>
+                <div className="an-summary__item">
+                  <span className="an-summary__label">En cours</span>
+                  <b className="an-summary__value">{fmtInt(running)}</b>
+                  <span className="an-summary__hint">{waiting ? `${fmtInt(waiting)} en attente` : 'Aucune file d’attente'}</span>
                 </div>
-              </article>
-              <article className="an-kpi an-kpi--ok">
-                <span className="an-kpi__icon"><CheckCircle2 size={19} /></span>
-                <div className="an-kpi__body">
-                  <span className="an-kpi__label">Terminées</span>
-                  <b className="an-kpi__value">{fmtInt(finished)}</b>
-                  <span className="an-kpi__hint">
+                <div className="an-summary__item">
+                  <span className="an-summary__label">Terminées</span>
+                  <b className="an-summary__value">{fmtInt(finished)}</b>
+                  <span className="an-summary__hint">
                     {warningCount ? `${fmtInt(warningCount)} avec avertissement${warningCount > 1 ? 's' : ''}` : 'Sans avertissement'}
                   </span>
                 </div>
-              </article>
-              <article className="an-kpi an-kpi--danger">
-                <span className="an-kpi__icon"><AlertTriangle size={19} /></span>
-                <div className="an-kpi__body">
-                  <span className="an-kpi__label">Échecs</span>
-                  <b className="an-kpi__value">{fmtInt(failures)}</b>
-                  <span className="an-kpi__hint">{failures ? 'Traitement en échec' : 'Aucun incident'}</span>
+                <div className={`an-summary__item ${failures ? 'is-alert' : ''}`}>
+                  <span className="an-summary__label">Échecs</span>
+                  <b className="an-summary__value">{fmtInt(failures)}</b>
+                  <span className="an-summary__hint">{failures ? 'Traitement en échec' : 'Aucun incident'}</span>
                 </div>
-              </article>
-            </section>
+              </section>
+            )}
 
-            <section className="an-panel">
+            <section className="an-panel" aria-label="Historique des analyses Gemini">
               <div className="an-panel__head">
                 <div>
                   <h2>Historique des analyses</h2>
-                  <p className="hint">Cliquez sur une analyse pour ouvrir sa fiche détaillée.</p>
+                  <p className="hint">Détections et analyses de parcelles réalisées avec Gemini.</p>
                 </div>
                 <span className="an-panel__count">
                   {fmtInt(analyses.length)} analyse{analyses.length > 1 ? 's' : ''}
                 </span>
               </div>
 
-              <ul className="an-list">
-                {analyses.map((a) => {
-                  const rowCounts = cultureCounts.get(a.id);
-                  const cultureRunning = cultureJob?.analysisId === a.id;
-                  // Entrée de l'historique des captures : l'analyse porte sur toutes
-                  // les parcelles détectées sur l'image du terrain.
-                  const analysisLabel = a.zone ? 'Analyser toutes les parcelles détectées' : 'Analyser les cultures';
-                  return (
-                    <li
-                      key={a.id}
-                      className="an-row"
-                      onClick={() => setOpen(a.id)}
-                      tabIndex={0}
-                      onKeyDown={(e) => e.key === 'Enter' && setOpen(a.id)}
-                      aria-label={`Ouvrir l'analyse ${a.id}`}
-                    >
-                      <div className={`an-row__thumb ${a.captureDataUrl ? '' : 'an-row__thumb--empty'}`}>
-                        {a.captureDataUrl
-                          ? <img src={a.captureDataUrl} alt="" loading="lazy" />
-                          : <ScanSearch size={22} />}
-                      </div>
+              {analyses.length === 0 ? (
+                <div className="an-empty">
+                  <span className="an-empty__icon"><ClipboardList size={22} /></span>
+                  <strong>Aucune analyse enregistrée</strong>
+                  <p>
+                    Lancez une détection de parcelles depuis la carte : la capture, les parcelles détectées
+                    et la zone analysée seront consignées ici.
+                  </p>
+                </div>
+              ) : (
+                <ul className="an-list">
+                  {analyses.map((a) => {
+                    const rowCounts = cultureCounts.get(a.id);
+                    const cultureRunning = cultureJob?.analysisId === a.id;
+                    // Entrée de l'historique des captures : l'analyse porte sur toutes
+                    // les parcelles détectées sur l'image du terrain.
+                    const analysisLabel = a.zone ? 'Analyser toutes les parcelles détectées' : 'Analyser les cultures';
+                    return (
+                      <li
+                        key={a.id}
+                        className="an-row"
+                        onClick={() => setOpen(a.id)}
+                        tabIndex={0}
+                        onKeyDown={(e) => e.key === 'Enter' && setOpen(a.id)}
+                        aria-label={`Ouvrir l'analyse ${a.id}`}
+                      >
+                        <div className="an-row__thumb">
+                          {a.captureDataUrl
+                            ? <img src={a.captureDataUrl} alt="" loading="lazy" />
+                            : <ScanSearch size={18} />}
+                        </div>
 
-                      <div className="an-row__main">
-                        <div className="an-row__title">
-                          <span className="an-row__id" title={a.id}>{shortId(a.id)}</span>
-                          {a.cached && <span className="tag">cache</span>}
-                          <AnalysisBadge status={a.status} />
-                        </div>
-                        <div className="an-row__meta">
-                          <span className="an-row__zone"><MapPin size={13} /> {withoutToolName(a.zoneLabel || '—')}</span>
-                          <span><CalendarDays size={13} /> {SEASON_BY_ID[a.seasonId]?.short ?? '—'}</span>
-                          <span><UserRound size={13} /> {a.createdBy}</span>
-                          <span><Clock3 size={13} /> {fmtDate(a.createdAt, true)}</span>
-                        </div>
-                        <div className="an-row__lower">
-                          {rowCounts && <CultureCounts counts={rowCounts} />}
-                          <div className="an-row__progress">
-                            <div
-                              className="an-progress"
-                              data-status={a.status}
-                              role="progressbar"
-                              aria-valuemin={0}
-                              aria-valuemax={100}
-                              aria-valuenow={a.progress}
-                            >
-                              <span style={{ width: `${Math.max(0, Math.min(100, a.progress))}%` }} />
-                            </div>
-                            <span className="an-row__progress-value">{a.progress} %</span>
+                        <div className="an-row__main">
+                          <div className="an-row__title">
+                            <span className="an-row__id" title={a.id}>{shortId(a.id)}</span>
+                            {a.cached && <span className="tag">cache</span>}
+                            <AnalysisBadge status={a.status} />
+                          </div>
+                          <div className="an-row__meta">
+                            <span className="an-row__zone"><MapPin size={12} /> {withoutToolName(a.zoneLabel || '—')}</span>
+                            <span>{SEASON_BY_ID[a.seasonId]?.short ?? '—'}</span>
+                            <span>{a.createdBy}</span>
+                            <time dateTime={a.createdAt}>{fmtDate(a.createdAt, true)}</time>
+                          </div>
+                          <div className="an-row__lower">
+                            {rowCounts && <CultureCounts counts={rowCounts} />}
+                            {!isFinished(a.status) && (
+                              <div className="an-row__progress">
+                                <div
+                                  className="an-progress"
+                                  data-status={a.status}
+                                  role="progressbar"
+                                  aria-valuemin={0}
+                                  aria-valuemax={100}
+                                  aria-valuenow={a.progress}
+                                >
+                                  <span style={{ width: `${Math.max(0, Math.min(100, a.progress))}%` }} />
+                                </div>
+                                <span className="an-row__progress-value">{a.progress} %</span>
+                              </div>
+                            )}
                           </div>
                         </div>
-                      </div>
 
-                      <div className="an-row__actions">
-                        {can.launch && (
-                          <button
-                            className="btn btn--sm btn--soft"
-                            onClick={(e) => { e.stopPropagation(); analyzeCultures(a.id); }}
-                            disabled={!a.detected?.length || (!!cultureJob && !cultureRunning)}
-                            title={!a.detected?.length ? 'Aucune parcelle détectée dans cette analyse' : analysisLabel}
-                          >
-                            {cultureRunning
-                              ? <><Loader2 size={13} className="capture-progress__spin" /> Analyse {cultureJob?.done ?? 0}/{cultureJob?.total ?? 0}</>
-                              : <><ScanSearch size={13} /> {a.zone ? 'Analyser tout' : 'Analyser les cultures'}</>}
-                          </button>
-                        )}
-                        {a.zone && (
-                          <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}>
-                            <MapPin size={13} /> Carte
-                          </button>
-                        )}
-                        {a.status === 'echec' && can.launch && (
-                          <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); setConfirm(a.id); }}>
-                            <RotateCcw size={13} /> Relancer
-                          </button>
-                        )}
-                        {can.correct && (
-                          <button
-                            className="btn btn--sm btn--danger btn--icon"
-                            onClick={(e) => { e.stopPropagation(); setDeleting(a.id); }}
-                            title="Supprimer l’analyse"
-                            aria-label={`Supprimer l'analyse ${a.id}`}
-                          ><Trash2 size={13} /></button>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
+                        <div className="an-row__actions">
+                          {can.launch && (
+                            <button
+                              className="btn btn--sm"
+                              onClick={(e) => { e.stopPropagation(); analyzeCultures(a.id); }}
+                              disabled={!a.detected?.length || (!!cultureJob && !cultureRunning)}
+                              title={!a.detected?.length ? 'Aucune parcelle détectée dans cette analyse' : analysisLabel}
+                            >
+                              {cultureRunning
+                                ? <><Loader2 size={13} className="capture-progress__spin" /> Analyse {cultureJob?.done ?? 0}/{cultureJob?.total ?? 0}</>
+                                : <><ScanSearch size={13} /> {a.zone ? 'Analyser tout' : 'Analyser les cultures'}</>}
+                            </button>
+                          )}
+                          {a.zone && (
+                            <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}>
+                              <MapPin size={13} /> Carte
+                            </button>
+                          )}
+                          {a.status === 'echec' && can.launch && (
+                            <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); setConfirm(a.id); }}>
+                              <RotateCcw size={13} /> Relancer
+                            </button>
+                          )}
+                          {can.correct && (
+                            <button
+                              className="btn btn--sm btn--danger btn--icon"
+                              onClick={(e) => { e.stopPropagation(); setDeleting(a.id); }}
+                              title="Supprimer l’analyse"
+                              aria-label={`Supprimer l'analyse ${a.id}`}
+                            ><Trash2 size={13} /></button>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </section>
-          </>
+          </div>
+        )}
+
+        {tab === 'auto' && (
+          <div className="an-tabs__panel" role="tabpanel" id="an-tabpanel-auto" aria-labelledby="an-tab-auto">
+            <section className="an-panel" aria-label="Historique des recherches automatiques">
+              <div className="an-panel__head">
+                <div>
+                  <h2>Historique des recherches</h2>
+                  <p className="hint">Cultures Orge / Autre culture trouvées par les recherches lancées depuis la carte.</p>
+                </div>
+                <div className="an-panel__tools">
+                  <span className="an-panel__count">
+                    {fmtInt(automaticSearches.length)} recherche{automaticSearches.length > 1 ? 's' : ''}
+                    {' · '}{fmtInt(autoCultureTotal)} culture{autoCultureTotal > 1 ? 's' : ''}
+                  </span>
+                  {can.correct && automaticSearches.length > 0 && (
+                    <button className="btn btn--sm btn--danger" onClick={() => setClearing(true)}>
+                      <Trash2 size={13} /> Supprimer tout
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {automaticSearches.length === 0 ? (
+                <div className="an-empty">
+                  <span className="an-empty__icon"><Sprout size={22} /></span>
+                  <strong>Aucune recherche automatique enregistrée</strong>
+                  <p>
+                    Lancez-en une depuis la carte avec l’outil « Recherche automatique » : ses cultures
+                    apparaîtront ici, séparées des analyses Gemini.
+                  </p>
+                </div>
+              ) : (
+                <ul className="an-list">
+                  {automaticSearches.map((entry) => {
+                    const isOpen = openAuto === entry.id;
+                    const orge = entry.cultures.filter((line) => line.culture === 'orge').length;
+                    const autre = entry.cultures.length - orge;
+                    return (
+                      <li key={entry.id} className="an-auto">
+                        <div
+                          className="an-auto__head"
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={isOpen}
+                          onClick={() => setOpenAuto(isOpen ? null : entry.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setOpenAuto(isOpen ? null : entry.id);
+                            }
+                          }}
+                        >
+                          <div className="an-auto__main">
+                            <div className="an-auto__title">
+                              <b>{fmtDate(entry.createdAt, true)}</b>
+                              <span>{entry.createdBy}</span>
+                            </div>
+                            <div className="an-row__meta">
+                              <span><MapPin size={12} /> {entry.center[0].toFixed(5)}, {entry.center[1].toFixed(5)}</span>
+                              <span>Rayon {fmtInt(entry.radiusM)} m</span>
+                              <span>{fmtInt(entry.candidates)} parcelle{entry.candidates > 1 ? 's' : ''}</span>
+                              <span>{fmtInt(entry.analyzed)} analysée{entry.analyzed > 1 ? 's' : ''}</span>
+                            </div>
+                          </div>
+                          <div className="an-auto__counts">
+                            <span><i style={{ background: colors.orge }} /> Orge <b>{fmtInt(orge)}</b></span>
+                            <span><i style={{ background: colors.autre }} /> Autre culture <b>{fmtInt(autre)}</b></span>
+                            <ChevronDown size={15} className={`an-auto__chevron ${isOpen ? 'is-open' : ''}`} aria-hidden />
+                          </div>
+                        </div>
+
+                        {isOpen && (
+                          <div className="an-auto__body">
+                            <p className="an-auto__params">
+                              Température de base {entry.baseTemperature} °C · seuil {fmtInt(entry.threshold)} °C ·
+                              {' '}période {fmtInt(entry.periodDays)} jours
+                              {entry.alreadyAnalyzed ? ` · ${fmtInt(entry.alreadyAnalyzed)} déjà classée(s)` : ''}
+                            </p>
+                            {entry.cultures.length === 0 ? (
+                              <p className="hint">Aucune culture enregistrée pour cette recherche.</p>
+                            ) : (
+                              <ul className="an-auto__cultures">
+                                {entry.cultures.map((line) => (
+                                  <li key={line.parcelId}>
+                                    <span>
+                                      <b>{line.label}</b>
+                                      <small>{fmtHa(line.areaHa)} · {line.confidence != null ? `${Math.round(line.confidence)} %` : 'confiance —'}</small>
+                                    </span>
+                                    <span className="an-auto__culture">
+                                      <i style={{ background: line.culture === 'orge' ? colors.orge : colors.autre }} />
+                                      {line.cultureLabel}
+                                    </span>
+                                    <div className="an-auto__actions">
+                                      <button
+                                        className="btn btn--sm"
+                                        onClick={() => showCultureOnMap(line.parcelId)}
+                                        aria-label={`Localiser sur la carte la parcelle ${line.label}`}
+                                      >
+                                        <MapPin size={13} /> Voir sur la carte
+                                      </button>
+                                      {can.correct && (
+                                        <button
+                                          className="btn btn--sm btn--danger"
+                                          title="Supprimer cette culture de l’historique (la parcelle est conservée)"
+                                          aria-label={`Supprimer la culture de ${line.label} de l’historique`}
+                                          onClick={() => setDeletingCulture({ searchId: entry.id, parcelId: line.parcelId })}
+                                        >
+                                          <Trash2 size={13} /> Supprimer
+                                        </button>
+                                      )}
+                                    </div>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            {entry.notice && <p className="hint">{entry.notice}</p>}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          </div>
         )}
       </div>
 
@@ -306,27 +503,25 @@ export default function Analyses() {
           ) : undefined}
         >
           <div className="an-detail">
-            <section className={`an-detail__hero ${current.captureDataUrl ? '' : 'an-detail__hero--plain'}`}>
-              <div className="an-detail__hero-copy">
-                <span className="an-detail__eyebrow"><ScanSearch size={14} /> Analyse de terrain</span>
-                <h3>{withoutToolName(current.zoneLabel || '—')}</h3>
-                <p className="an-detail__sub">
-                  {SEASON_BY_ID[current.seasonId]?.label ?? '—'} · {fmtDate(current.createdAt, true)}
-                </p>
-                <div className="an-detail__tags">
-                  <AnalysisBadge status={current.status} />
-                  {current.cached && <span className="tag">cache</span>}
-                  <span className="an-detail__tag"><UserRound size={13} /> {current.createdBy}</span>
-                </div>
+            <section className="an-detail__hero">
+              <h3>{withoutToolName(current.zoneLabel || '—')}</h3>
+              <p className="an-detail__sub">
+                {SEASON_BY_ID[current.seasonId]?.label ?? '—'} · {fmtDate(current.createdAt, true)}
+              </p>
+              <div className="an-detail__tags">
+                <AnalysisBadge status={current.status} />
+                {current.cached && <span className="tag">cache</span>}
+                <span className="an-detail__tag"><UserRound size={13} /> {current.createdBy}</span>
               </div>
-              {current.captureDataUrl && (
-                <img
-                  className="an-detail__capture"
-                  src={current.captureDataUrl}
-                  alt="Capture satellite de la zone analysée"
-                />
-              )}
             </section>
+
+            {current.captureDataUrl && (
+              <img
+                className="an-detail__capture"
+                src={current.captureDataUrl}
+                alt="Capture satellite de la zone analysée"
+              />
+            )}
 
             <div className="an-detail__stats">
               <div className="an-stat">
@@ -443,7 +638,7 @@ export default function Analyses() {
                   {current.detected.map((p) => (
                     <li key={p.id}>
                       <span><b>{withoutToolName(p.label)}</b><small>{fmtHa(p.areaHa)}</small></span>
-                      <button className="btn btn--sm btn--soft" onClick={() => showOnMap(current, p)}>
+                      <button className="btn btn--sm" onClick={() => showOnMap(current, p)}>
                         <MapPin size={13} /> Voir sur la carte
                       </button>
                     </li>
@@ -525,6 +720,49 @@ export default function Analyses() {
           <p className="note">
             Seules les parcelles créées par cette analyse sont concernées : celles des autres analyses restent
             sur la carte.
+          </p>
+        </Modal>
+      )}
+      {deletingCulture && (
+        <Modal
+          title="Retirer cette culture de l’historique ?"
+          onClose={() => setDeletingCulture(null)}
+          footer={<>
+            <button className="btn btn--ghost" onClick={() => setDeletingCulture(null)}>Annuler</button>
+            <button className="btn btn--danger" onClick={confirmRemoveCulture}>
+              <Trash2 size={14} /> Retirer la culture
+            </button>
+          </>}
+        >
+          <p>
+            La culture{deletingCultureLine ? ` « ${deletingCultureLine.cultureLabel} » de la parcelle ${deletingCultureLine.label}` : ''}
+            {' '}sera retirée de l’historique des recherches automatiques.
+          </p>
+          <p className="note">
+            Seule cette ligne d’historique est supprimée : la parcelle, son contour et sa culture en base
+            sont conservés. L’historique des analyses Gemini n’est pas modifié.
+          </p>
+        </Modal>
+      )}
+      {clearing && (
+        <Modal
+          title="Supprimer tout l’historique ?"
+          onClose={() => setClearing(false)}
+          footer={<>
+            <button className="btn btn--ghost" onClick={() => setClearing(false)}>Annuler</button>
+            <button className="btn btn--danger" onClick={confirmClearAll}>
+              <Trash2 size={14} /> Supprimer tout
+            </button>
+          </>}
+        >
+          <p>
+            Les <b>{fmtInt(automaticSearches.length)} recherche{automaticSearches.length > 1 ? 's' : ''}</b> de
+            l’historique et les <b>{fmtInt(autoCultureTotal)} culture{autoCultureTotal > 1 ? 's' : ''}</b> qu’elles
+            contiennent seront définitivement supprimées.
+          </p>
+          <p className="note">
+            Seuls les enregistrements de cet historique sont concernés : les parcelles, leurs contours et
+            leurs cultures restent en base, et l’historique des analyses Gemini n’est pas modifié.
           </p>
         </Modal>
       )}

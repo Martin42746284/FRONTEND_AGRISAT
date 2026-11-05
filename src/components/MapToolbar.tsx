@@ -101,6 +101,7 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
   const setAutomaticDetection = useApp((s) => s.setAutomaticDetection);
   const selectedAutomaticParcelId = useApp((s) => s.selectedAutomaticParcelId);
   const selectAutomaticParcel = useApp((s) => s.selectAutomaticParcel);
+  const recordAutomaticSearch = useApp((s) => s.recordAutomaticSearch);
   const automaticSearchCenter = useApp((s) => s.automaticSearchCenter);
   const setAutomaticSearchCenter = useApp((s) => s.setAutomaticSearchCenter);
   const setAutomaticSearchRadius = useApp((s) => s.setAutomaticSearchRadius);
@@ -645,6 +646,34 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
           + (loadError ? ' Synchronisation avec la base incomplète.' : ' Parcelles, cultures et fiches actualisées.'),
         loadError ? 'warn' : barley ? 'ok' : 'info',
       );
+      // Historique dédié aux recherches automatiques : chaque culture lue est
+      // consignée avec sa parcelle, séparément de l'historique des analyses Gemini.
+      recordAutomaticSearch({
+        center: [lat, lng],
+        radiusM,
+        baseTemperature: base,
+        threshold,
+        periodDays: period,
+        candidates: merged.candidates_found,
+        analyzed: merged.analyzed_count,
+        alreadyAnalyzed: merged.already_analyzed_count ?? 0,
+        notice: merged.notice,
+        cultures: merged.parcels.flatMap((candidate) => {
+          const culture = automaticCulture(candidate);
+          if (culture.id === 'inconnue') return [];
+          const parcel = parcelForCandidate(candidate, freshParcels);
+          return [{
+            parcelId: parcel?.id ?? candidate.id,
+            label: shortId(parcel?.id ?? candidate.id),
+            areaHa: parcel?.areaHa ?? 0,
+            culture: culture.id,
+            cultureLabel: culture.label,
+            confidence: typeof candidate.analysis?.confidence === 'number'
+              ? candidate.analysis.confidence
+              : null,
+          }];
+        }),
+      });
       finishAutoSearchProgress();
     } catch (error) {
       if (autoAbortRef.current !== ctrl) return;
