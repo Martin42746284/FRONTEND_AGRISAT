@@ -674,6 +674,9 @@ export default function MapToolbar({ onAnalyze, canLaunch }: { onAnalyze?: () =>
           }];
         }),
       });
+      setAutoSearchOpen(false);
+      setAutomaticSearchCenter(null);
+      setAutomaticSearchRadius(null);
       finishAutoSearchProgress();
     } catch (error) {
       if (autoAbortRef.current !== ctrl) return;
