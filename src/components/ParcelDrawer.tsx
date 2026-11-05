@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from 'react';
 import {
-  X, Pencil, ClipboardCheck, Flag, Trash2, Merge, Split, Check, Move, Wheat,
+  X, Pencil, ClipboardCheck, Flag, Trash2, Merge, Split, Check, Move, Wheat, Loader2,
 } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { CULTURES, CULTURE_BY_ID, ROLES, SEASONS, SEASON_BY_ID } from '../data/constants';
@@ -239,10 +239,11 @@ export default function ParcelDrawer({ onAnalyze, canLaunch }: { onAnalyze?: () 
   const editingCoords = useApp((s) => s.editingCoords);
   const splitParcelId = useApp((s) => s.splitParcelId);
   const splitDraft = useApp((s) => s.splitDraft);
+  const splitSaving = useApp((s) => s.splitSaving);
   const analyzingParcelId = useApp((s) => s.analyzingParcelId);
   const {
     startEditParcel, cancelEditParcel, saveEditParcel,
-    startSplitParcel, undoSplitPoint, cancelSplitParcel, saveSplitParcel,
+    startSplitParcel, undoSplitPoint, clearSplitDraft, cancelSplitParcel, saveSplitParcel,
   } = useApp.getState();
   const [modal, setModal] = useState<ModalKind | null>(null);
 // Prop defaults for compatibility with MapToolbar usage
@@ -250,12 +251,17 @@ const analyzeAction = onAnalyze || (() => alert('Analyse non disponible'));
 const launchAllowed = canLaunch !== false;
 
   const p = useMemo(() => parcels.find((x) => x.id === id), [parcels, id]);
+  const splitting = !!p && splitParcelId === p.id;
+  // Aperçu recalculé seulement quand le tracé change : les rendus déclenchés par
+  // les toasts, l’analyse ou les cultures n’ont pas à refaire la géométrie.
+  // Ce useMemo reste avant le retour anticipé `if (!p)` pour respecter l’ordre
+  // des hooks entre deux rendus (fiche ouverte / fiche fermée).
+  const splitPreview = useMemo(
+    () => (splitting && p ? splitParcelByCut(p.coords, splitDraft) : null),
+    [splitting, p, splitDraft],
+  );
   if (!p) return null;
   const editing = editingParcelId === p.id && !!editingCoords;
-  const splitting = splitParcelId === p.id;
-  // Aperçu calculé à chaque rendu : le tracé doit apparaître/disparaître au fil
-  // des clics, et la scission n'est validable que si les deux parties existent.
-  const splitPreview = splitting ? splitParcelByCut(p.coords, splitDraft) : null;
   const splitError = splitPreview && !splitPreview.ok ? splitPreview.error : null;
   const splitParts = splitPreview && splitPreview.ok ? splitPreview.parts : null;
   const r = p.results[seasonId];
@@ -303,9 +309,19 @@ const launchAllowed = canLaunch !== false;
         <div className="editbar" role="region" aria-label="Mode scission de la parcelle">
           <div className="editbar__head">
             <b><Split size={14} /> Scinder la parcelle</b>
-            <span className="hint">{splitDraft.length} point{splitDraft.length > 1 ? 's' : ''}</span>
+            <span className="hint">{splitDraft.length} sommet{splitDraft.length > 1 ? 's' : ''}</span>
           </div>
-          <p className="hint">Tracez la limite réelle : premier point sur le contour, sommets intermédiaires, puis bord opposé.</p>
+          <p className="hint">
+            Posez le départ sur le contour, ajoutez autant de sommets que nécessaire pour suivre
+            la limite réelle (talus, chemin, haie), puis terminez sur le bord opposé.
+          </p>
+          <p className="hint">
+            {splitDraft.length === 0
+              ? 'Cliquez sur le bord de la parcelle pour poser le premier point.'
+              : splitDraft.length === 1
+                ? 'Départ posé. Ajoutez des points, puis terminez sur le bord opposé.'
+                : 'Glissez un point pour l’ajuster ; ajoutez-en d’autres si la limite est irrégulière.'}
+          </p>
           {splitParts ? (
             <dl className="kv">
               <dt>Parties obtenues</dt>
@@ -320,14 +336,21 @@ const launchAllowed = canLaunch !== false;
             <button
               className="btn btn--primary"
               onClick={() => { void saveSplitParcel(); }}
-              disabled={!splitParts}
+              disabled={!splitParts || splitSaving}
             >
-              <Check size={14} /> Valider la scission
+              {splitSaving
+                ? <><Loader2 size={14} className="capture-progress__spin" /> Scission en cours…</>
+                : <><Check size={14} /> Valider la scission</>}
             </button>
-            <button className="btn" onClick={undoSplitPoint} disabled={splitDraft.length === 0}>
+            <button className="btn" onClick={undoSplitPoint} disabled={splitDraft.length === 0 || splitSaving}>
               Dernier point
             </button>
-            <button className="btn" onClick={cancelSplitParcel}><X size={14} /> Annuler</button>
+            <button className="btn" onClick={clearSplitDraft} disabled={splitDraft.length === 0 || splitSaving}>
+              Effacer le tracé
+            </button>
+            <button className="btn" onClick={cancelSplitParcel} disabled={splitSaving}>
+              <X size={14} /> Annuler
+            </button>
           </div>
           <p className="hint">La partie contenant le centre garde la culture ; l’autre reste à analyser.</p>
         </div>

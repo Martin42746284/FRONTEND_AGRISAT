@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  AlertTriangle, Check, ChevronDown, Circle, CircleDot, ClipboardList, Loader2, MapPin, Plus,
-  RotateCcw, ScanSearch, Sprout, Trash2, UserRound,
+  AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, Circle, CircleDot, ClipboardList,
+  Clock, Crosshair, Eye, History, Layers, Leaf, Loader2, MapPin, MoreHorizontal, Play, Plus,
+  RotateCcw, ScanSearch, Search, Sprout, Thermometer, Trash2, UserRound,
 } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import type { Analysis, AnalysisParcel } from '../types';
@@ -79,7 +80,16 @@ export default function Analyses() {
   const [clearing, setClearing] = useState(false);
   /** Culture d'une recherche automatique dont le retrait attend confirmation. */
   const [deletingCulture, setDeletingCulture] = useState<{ searchId: string; parcelId: string } | null>(null);
+  /** Menu d'actions secondaires d'une ligne d'analyse Gemini. */
+  const [menuFor, setMenuFor] = useState<string | null>(null);
   const can = ROLES[user.role].can;
+
+  useEffect(() => {
+    if (!menuFor) return;
+    const close = () => setMenuFor(null);
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [menuFor]);
   const current = analyses.find((a) => a.id === open);
   const deletingEntry = deleting ? analyses.find((a) => a.id === deleting) : undefined;
   const deletingCultureLine = deletingCulture
@@ -157,18 +167,43 @@ export default function Analyses() {
   };
 
   return (
-    <div className="page page--single">
-      <div className="content content--wide">
+    <div className={`page page--single an-page an-page--${tab}`}>
+      <div className={`an-hero an-hero--${tab}`} aria-hidden>
+        {tab === 'auto' ? (
+          <>
+            <span className="an-hero__photo" />
+            <span className="an-hero__fade" />
+          </>
+        ) : (
+          <>
+            <span className="an-hero__wave an-hero__wave--1" />
+            <span className="an-hero__wave an-hero__wave--2" />
+            <span className="an-hero__wave an-hero__wave--3" />
+          </>
+        )}
+      </div>
+
+      <div className="content content--wide an-content">
         <header className="an-head">
-          <div>
-            <h1>Analyses</h1>
-            <p className="an-head__sub">
-              Pilotez vos analyses de terrain, suivez leur avancement et consultez les résultats culturaux.
-            </p>
+          <div className="an-head__title">
+            <span className={`an-head__icon an-head__icon--${tab}`}>
+              {tab === 'gemini' ? <Leaf size={40} /> : (
+                <span className="an-head__glass">
+                  <Search size={38} />
+                  <Leaf size={15} className="an-head__leaf" />
+                </span>
+              )}
+            </span>
+            <div>
+              <h1>Analyses</h1>
+              <p className="an-head__sub">
+                Pilotez vos analyses de terrain, suivez leur avancement et consultez les résultats cartographiques.
+              </p>
+            </div>
           </div>
           {can.launch && tab === 'gemini' && (
-            <button className="btn btn--primary" onClick={() => setCreating(true)}>
-              <Plus size={15} /> Nouvelle analyse
+            <button className="btn btn--primary an-new" onClick={() => setCreating(true)}>
+              <Plus size={17} /> Nouvelle analyse
             </button>
           )}
         </header>
@@ -183,7 +218,7 @@ export default function Analyses() {
             className={`an-tab ${tab === 'gemini' ? 'is-active' : ''}`}
             onClick={() => setTab('gemini')}
           >
-            <ScanSearch size={14} />
+            <ScanSearch size={17} />
             Analyse Gemini
             <span className="an-tab__count">{fmtInt(analyses.length)}</span>
           </button>
@@ -196,7 +231,7 @@ export default function Analyses() {
             className={`an-tab ${tab === 'auto' ? 'is-active' : ''}`}
             onClick={() => setTab('auto')}
           >
-            <Sprout size={14} />
+            <Search size={17} />
             Recherche automatique
             <span className="an-tab__count">{fmtInt(automaticSearches.length)}</span>
           </button>
@@ -207,35 +242,50 @@ export default function Analyses() {
             {analyses.length > 0 && (
               <section className="an-summary" aria-label="Synthèse des analyses Gemini">
                 <div className="an-summary__item">
-                  <span className="an-summary__label">Analyses Gemini</span>
-                  <b className="an-summary__value">{fmtInt(analyses.length)}</b>
-                  <span className="an-summary__hint">{fmtInt(followedParcels)} parcelles suivies</span>
+                  <span className="an-summary__icon an-summary__icon--green"><BarChart3 size={24} /></span>
+                  <div className="an-summary__body">
+                    <span className="an-summary__label">Analyses Gemini</span>
+                    <b className="an-summary__value">{fmtInt(analyses.length)}</b>
+                    <span className="an-summary__hint">{fmtInt(followedParcels)} parcelles suivies</span>
+                  </div>
                 </div>
                 <div className="an-summary__item">
-                  <span className="an-summary__label">En cours</span>
-                  <b className="an-summary__value">{fmtInt(running)}</b>
-                  <span className="an-summary__hint">{waiting ? `${fmtInt(waiting)} en attente` : 'Aucune file d’attente'}</span>
+                  <span className="an-summary__icon an-summary__icon--blue"><Play size={21} fill="currentColor" /></span>
+                  <div className="an-summary__body">
+                    <span className="an-summary__label">En cours</span>
+                    <b className="an-summary__value">{fmtInt(running)}</b>
+                    <span className="an-summary__hint">{waiting ? `${fmtInt(waiting)} en attente` : 'Aucune file d’attente'}</span>
+                  </div>
                 </div>
                 <div className="an-summary__item">
-                  <span className="an-summary__label">Terminées</span>
-                  <b className="an-summary__value">{fmtInt(finished)}</b>
-                  <span className="an-summary__hint">
-                    {warningCount ? `${fmtInt(warningCount)} avec avertissement${warningCount > 1 ? 's' : ''}` : 'Sans avertissement'}
-                  </span>
+                  <span className="an-summary__icon an-summary__icon--purple"><Check size={23} /></span>
+                  <div className="an-summary__body">
+                    <span className="an-summary__label">Terminées</span>
+                    <b className="an-summary__value">{fmtInt(finished)}</b>
+                    <span className="an-summary__hint">
+                      {warningCount ? `${fmtInt(warningCount)} avec avertissement${warningCount > 1 ? 's' : ''}` : 'Sans avertissement'}
+                    </span>
+                  </div>
                 </div>
                 <div className={`an-summary__item ${failures ? 'is-alert' : ''}`}>
-                  <span className="an-summary__label">Échecs</span>
-                  <b className="an-summary__value">{fmtInt(failures)}</b>
-                  <span className="an-summary__hint">{failures ? 'Traitement en échec' : 'Aucun incident'}</span>
+                  <span className="an-summary__icon an-summary__icon--amber"><AlertTriangle size={22} /></span>
+                  <div className="an-summary__body">
+                    <span className="an-summary__label">Échecs</span>
+                    <b className="an-summary__value">{fmtInt(failures)}</b>
+                    <span className="an-summary__hint">{failures ? 'Traitement en échec' : 'Aucun incident'}</span>
+                  </div>
                 </div>
               </section>
             )}
 
             <section className="an-panel" aria-label="Historique des analyses Gemini">
               <div className="an-panel__head">
-                <div>
-                  <h2>Historique des analyses</h2>
-                  <p className="hint">Détections et analyses de parcelles réalisées avec Gemini.</p>
+                <div className="an-panel__title">
+                  <span className="an-panel__icon"><History size={22} /></span>
+                  <div>
+                    <h2>Historique des analyses</h2>
+                    <p className="hint">Détections et analyses de parcelles réalisées avec Gemini.</p>
+                  </div>
                 </div>
                 <span className="an-panel__count">
                   {fmtInt(analyses.length)} analyse{analyses.length > 1 ? 's' : ''}
@@ -271,7 +321,7 @@ export default function Analyses() {
                         <div className="an-row__thumb">
                           {a.captureDataUrl
                             ? <img src={a.captureDataUrl} alt="" loading="lazy" />
-                            : <ScanSearch size={18} />}
+                            : <ScanSearch size={22} />}
                         </div>
 
                         <div className="an-row__main">
@@ -281,10 +331,18 @@ export default function Analyses() {
                             <AnalysisBadge status={a.status} />
                           </div>
                           <div className="an-row__meta">
-                            <span className="an-row__zone"><MapPin size={12} /> {withoutToolName(a.zoneLabel || '—')}</span>
-                            <span>{SEASON_BY_ID[a.seasonId]?.short ?? '—'}</span>
-                            <span>{a.createdBy}</span>
-                            <time dateTime={a.createdAt}>{fmtDate(a.createdAt, true)}</time>
+                            <span className="an-meta an-meta--place">
+                              <MapPin size={13} /> {withoutToolName(a.zoneLabel || '—')}
+                            </span>
+                            <span className="an-meta">
+                              <CalendarDays size={13} /> {SEASON_BY_ID[a.seasonId]?.short ?? '—'}
+                            </span>
+                            <span className="an-meta">
+                              <UserRound size={13} /> {a.createdBy}
+                            </span>
+                            <time className="an-meta" dateTime={a.createdAt}>
+                              <Clock size={13} /> {fmtDate(a.createdAt, true)}
+                            </time>
                           </div>
                           <div className="an-row__lower">
                             {rowCounts && <CultureCounts counts={rowCounts} />}
@@ -309,34 +367,56 @@ export default function Analyses() {
                         <div className="an-row__actions">
                           {can.launch && (
                             <button
-                              className="btn btn--sm"
+                              className="an-action an-action--soft"
                               onClick={(e) => { e.stopPropagation(); analyzeCultures(a.id); }}
                               disabled={!a.detected?.length || (!!cultureJob && !cultureRunning)}
                               title={!a.detected?.length ? 'Aucune parcelle détectée dans cette analyse' : analysisLabel}
                             >
                               {cultureRunning
-                                ? <><Loader2 size={13} className="capture-progress__spin" /> Analyse {cultureJob?.done ?? 0}/{cultureJob?.total ?? 0}</>
-                                : <><ScanSearch size={13} /> {a.zone ? 'Analyser tout' : 'Analyser les cultures'}</>}
+                                ? <><Loader2 size={15} className="capture-progress__spin" /> Analyse {cultureJob?.done ?? 0}/{cultureJob?.total ?? 0}</>
+                                : <><ScanSearch size={15} /> {a.zone ? 'Analyser tout' : 'Analyser les cultures'}</>}
                             </button>
                           )}
                           {a.zone && (
-                            <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}>
-                              <MapPin size={13} /> Carte
+                            <button className="an-action" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}>
+                              <MapPin size={15} /> Carte
                             </button>
                           )}
-                          {a.status === 'echec' && can.launch && (
-                            <button className="btn btn--sm" onClick={(e) => { e.stopPropagation(); setConfirm(a.id); }}>
-                              <RotateCcw size={13} /> Relancer
-                            </button>
-                          )}
-                          {can.correct && (
+                          <div className="an-row__more">
                             <button
-                              className="btn btn--sm btn--danger btn--icon"
-                              onClick={(e) => { e.stopPropagation(); setDeleting(a.id); }}
-                              title="Supprimer l’analyse"
-                              aria-label={`Supprimer l'analyse ${a.id}`}
-                            ><Trash2 size={13} /></button>
-                          )}
+                              className="an-action an-action--icon"
+                              onClick={(e) => { e.stopPropagation(); setMenuFor(menuFor === a.id ? null : a.id); }}
+                              title="Plus d’actions"
+                              aria-haspopup="menu"
+                              aria-expanded={menuFor === a.id}
+                              aria-label={`Plus d'actions pour l'analyse ${a.id}`}
+                            >
+                              <MoreHorizontal size={18} />
+                            </button>
+                            {menuFor === a.id && (
+                              <div className="an-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+                                {a.zone && (
+                                  <button role="menuitem" onClick={() => { setMenuFor(null); showOnMap(a); }}>
+                                    <MapPin size={15} /> Voir sur la carte
+                                  </button>
+                                )}
+                                {a.status === 'echec' && can.launch && (
+                                  <button role="menuitem" onClick={() => { setMenuFor(null); setConfirm(a.id); }}>
+                                    <RotateCcw size={15} /> Relancer
+                                  </button>
+                                )}
+                                {can.correct && (
+                                  <button
+                                    role="menuitem"
+                                    className="is-danger"
+                                    onClick={() => { setMenuFor(null); setDeleting(a.id); }}
+                                  >
+                                    <Trash2 size={15} /> Supprimer
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </li>
                     );
@@ -351,9 +431,12 @@ export default function Analyses() {
           <div className="an-tabs__panel" role="tabpanel" id="an-tabpanel-auto" aria-labelledby="an-tab-auto">
             <section className="an-panel" aria-label="Historique des recherches automatiques">
               <div className="an-panel__head">
-                <div>
-                  <h2>Historique des recherches</h2>
-                  <p className="hint">Cultures Orge / Autre culture trouvées par les recherches lancées depuis la carte.</p>
+                <div className="an-panel__title">
+                  <span className="an-panel__icon"><History size={22} /></span>
+                  <div>
+                    <h2>Historique des recherches</h2>
+                    <p className="hint">Cultures Orge / Autre culture trouvées par les recherches lancées depuis la carte.</p>
+                  </div>
                 </div>
                 <div className="an-panel__tools">
                   <span className="an-panel__count">
@@ -361,8 +444,8 @@ export default function Analyses() {
                     {' · '}{fmtInt(autoCultureTotal)} culture{autoCultureTotal > 1 ? 's' : ''}
                   </span>
                   {can.correct && automaticSearches.length > 0 && (
-                    <button className="btn btn--sm btn--danger" onClick={() => setClearing(true)}>
-                      <Trash2 size={13} /> Supprimer tout
+                    <button className="an-clear" onClick={() => setClearing(true)}>
+                      <Trash2 size={15} /> Supprimer tout
                     </button>
                   )}
                 </div>
@@ -400,37 +483,49 @@ export default function Analyses() {
                         >
                           <div className="an-auto__main">
                             <div className="an-auto__title">
+                              <CalendarDays size={18} />
                               <b>{fmtDate(entry.createdAt, true)}</b>
-                              <span>{entry.createdBy}</span>
+                              <span className="an-auto__sep" aria-hidden />
+                              <BarChart3 size={18} />
+                              <b>{entry.createdBy}</b>
                             </div>
-                            <div className="an-row__meta">
-                              <span><MapPin size={12} /> {entry.center[0].toFixed(5)}, {entry.center[1].toFixed(5)}</span>
-                              <span>Rayon {fmtInt(entry.radiusM)} m</span>
-                              <span>{fmtInt(entry.candidates)} parcelle{entry.candidates > 1 ? 's' : ''}</span>
-                              <span>{fmtInt(entry.analyzed)} analysée{entry.analyzed > 1 ? 's' : ''}</span>
+                            <div className="an-row__meta an-auto__meta">
+                              <span className="an-meta">
+                                <MapPin size={14} /> {entry.center[0].toFixed(5)}, {entry.center[1].toFixed(5)}
+                              </span>
+                              <span className="an-meta">
+                                <Crosshair size={14} /> Rayon {fmtInt(entry.radiusM)} m
+                              </span>
+                              <span className="an-meta">
+                                <Layers size={14} /> {fmtInt(entry.candidates)} parcelle{entry.candidates > 1 ? 's' : ''}
+                              </span>
+                              <span className="an-meta">
+                                <BarChart3 size={14} /> {fmtInt(entry.analyzed)} analysée{entry.analyzed > 1 ? 's' : ''}
+                              </span>
                             </div>
+                            <p className="an-auto__params">
+                              <Thermometer size={15} />
+                              Température de base {entry.baseTemperature} °C · seuil {fmtInt(entry.threshold)} °C ·
+                              {' '}période {fmtInt(entry.periodDays)} jours
+                              {entry.alreadyAnalyzed ? ` · ${fmtInt(entry.alreadyAnalyzed)} déjà classée(s)` : ''}
+                            </p>
                           </div>
                           <div className="an-auto__counts">
                             <span><i style={{ background: colors.orge }} /> Orge <b>{fmtInt(orge)}</b></span>
                             <span><i style={{ background: colors.autre }} /> Autre culture <b>{fmtInt(autre)}</b></span>
-                            <ChevronDown size={15} className={`an-auto__chevron ${isOpen ? 'is-open' : ''}`} aria-hidden />
+                            <ChevronDown size={19} className={`an-auto__chevron ${isOpen ? 'is-open' : ''}`} aria-hidden />
                           </div>
                         </div>
 
                         {isOpen && (
                           <div className="an-auto__body">
-                            <p className="an-auto__params">
-                              Température de base {entry.baseTemperature} °C · seuil {fmtInt(entry.threshold)} °C ·
-                              {' '}période {fmtInt(entry.periodDays)} jours
-                              {entry.alreadyAnalyzed ? ` · ${fmtInt(entry.alreadyAnalyzed)} déjà classée(s)` : ''}
-                            </p>
                             {entry.cultures.length === 0 ? (
-                              <p className="hint">Aucune culture enregistrée pour cette recherche.</p>
+                              <p className="hint an-auto__empty">Aucune culture enregistrée pour cette recherche.</p>
                             ) : (
                               <ul className="an-auto__cultures">
                                 {entry.cultures.map((line) => (
                                   <li key={line.parcelId}>
-                                    <span>
+                                    <span className="an-auto__culture-label">
                                       <b>{line.label}</b>
                                       <small>{fmtHa(line.areaHa)} · {line.confidence != null ? `${Math.round(line.confidence)} %` : 'confiance —'}</small>
                                     </span>
@@ -440,20 +535,20 @@ export default function Analyses() {
                                     </span>
                                     <div className="an-auto__actions">
                                       <button
-                                        className="btn btn--sm"
+                                        className="an-link-btn"
                                         onClick={() => showCultureOnMap(line.parcelId)}
                                         aria-label={`Localiser sur la carte la parcelle ${line.label}`}
                                       >
-                                        <MapPin size={13} /> Voir sur la carte
+                                        <Eye size={16} /> Voir sur la carte
                                       </button>
                                       {can.correct && (
                                         <button
-                                          className="btn btn--sm btn--danger"
+                                          className="an-link-btn an-link-btn--danger"
                                           title="Supprimer cette culture de l’historique (la parcelle est conservée)"
                                           aria-label={`Supprimer la culture de ${line.label} de l’historique`}
                                           onClick={() => setDeletingCulture({ searchId: entry.id, parcelId: line.parcelId })}
                                         >
-                                          <Trash2 size={13} /> Supprimer
+                                          <Trash2 size={15} /> Supprimer
                                         </button>
                                       )}
                                     </div>
@@ -461,7 +556,7 @@ export default function Analyses() {
                                 ))}
                               </ul>
                             )}
-                            {entry.notice && <p className="hint">{entry.notice}</p>}
+                            {entry.notice && <p className="hint an-auto__notice">{entry.notice}</p>}
                           </div>
                         )}
                       </li>

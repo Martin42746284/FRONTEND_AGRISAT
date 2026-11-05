@@ -225,9 +225,13 @@ interface State {
    */
   splitParcelId: string | null;
   splitDraft: LatLng[];
+  /** Une écriture de scission est en cours (retour visuel pendant les appels API). */
+  splitSaving: boolean;
   startSplitParcel: (id: string) => void;
   addSplitPoint: (point: LatLng) => void;
+  moveSplitPoint: (index: number, point: LatLng) => void;
   undoSplitPoint: () => void;
+  clearSplitDraft: () => void;
   cancelSplitParcel: () => void;
   /** Enregistre la scission : la parcelle d'origine garde son identité et sa culture. */
   saveSplitParcel: () => Promise<boolean>;
@@ -380,6 +384,7 @@ export const useApp = create<State>()(
       editingCoords: null,
       splitParcelId: null,
       splitDraft: [],
+      splitSaving: false,
 
       init: async () => {
         if (get().ready) return;
@@ -492,7 +497,7 @@ export const useApp = create<State>()(
             ? { editingParcelId: null, editingCoords: null }
             : {}),
           ...(s.splitParcelId && s.splitParcelId !== id
-            ? { splitParcelId: null, splitDraft: [] }
+            ? { splitParcelId: null, splitDraft: [], splitSaving: false }
             : {}),
         })),
       flyTo: (t) => set({ fly: { ...t, nonce: flySeq++ } }),
@@ -511,6 +516,7 @@ export const useApp = create<State>()(
           editingCoords: parcel.coords.map(([lat, lng]) => [lat, lng] as LatLng),
           splitParcelId: null,
           splitDraft: [],
+          splitSaving: false,
         });
       },
       setEditingCoords: (coords) => set({ editingCoords: coords }),
@@ -558,6 +564,7 @@ export const useApp = create<State>()(
         set({
           splitParcelId: id,
           splitDraft: [],
+          splitSaving: false,
           selectedId: id,
           editingParcelId: null,
           editingCoords: null,
@@ -566,7 +573,7 @@ export const useApp = create<State>()(
           bornePlacement: false,
           borneDraft: null,
         });
-        s.toast('Posez un point sur le contour, suivez la limite réelle, puis terminez sur le bord opposé.', 'info');
+        s.toast('Posez le départ sur le contour, ajoutez des points pour suivre la limite, puis terminez sur le bord opposé.', 'info');
       },
       addSplitPoint: (point) => {
         const s = get();
@@ -589,9 +596,16 @@ export const useApp = create<State>()(
         }
         set({ splitDraft: [...s.splitDraft, point] });
       },
+      moveSplitPoint: (index, point) => set((s) => {
+        if (!s.splitParcelId || index < 0 || index >= s.splitDraft.length) return {};
+        const splitDraft = s.splitDraft.slice();
+        splitDraft[index] = point;
+        return { splitDraft };
+      }),
       undoSplitPoint: () => set((s) => ({ splitDraft: s.splitDraft.slice(0, -1) })),
+      clearSplitDraft: () => set({ splitDraft: [] }),
       cancelSplitParcel: () => {
-        set({ splitParcelId: null, splitDraft: [] });
+        set({ splitParcelId: null, splitDraft: [], splitSaving: false });
         get().toast('Scission annulée — contour inchangé.', 'info');
       },
       saveSplitParcel: async () => {
@@ -601,7 +615,7 @@ export const useApp = create<State>()(
         if (!id) return false;
         const parcel = s.parcels.find((p) => p.id === id);
         if (!parcel) {
-          set({ splitParcelId: null, splitDraft: [] });
+          set({ splitParcelId: null, splitDraft: [], splitSaving: false });
           return false;
         }
         const split = splitParcelByCut(parcel.coords, s.splitDraft);
@@ -610,6 +624,7 @@ export const useApp = create<State>()(
           return false;
         }
         splitSaveRunning = true;
+        set({ splitSaving: true });
         const [first, second] = split.parts;
         const keeperIsFirst = keeperPartIndex(parcel.centroid, first, second) === 0;
         const keeperCoords = keeperIsFirst ? first : second;
@@ -643,6 +658,7 @@ export const useApp = create<State>()(
         } catch (error) {
           console.warn('[AgriSat] Création de la partie scindée impossible :', error);
           splitSaveRunning = false;
+          set({ splitSaving: false });
           s.toast('Scission impossible : la parcelle est inchangée.', 'danger');
           return false;
         }
@@ -696,6 +712,7 @@ export const useApp = create<State>()(
             }
           }
           splitSaveRunning = false;
+          set({ splitSaving: false });
           s.toast('Scission impossible : la parcelle est inchangée.', 'danger');
           return false;
         }
@@ -711,6 +728,7 @@ export const useApp = create<State>()(
           parcels: [...st.parcels.map((p) => (p.id === parcel.id ? keeper : p)), newPart],
           splitParcelId: null,
           splitDraft: [],
+          splitSaving: false,
           selectedId: keeper.id,
           ...(isDatabaseParcelId(parcel.id)
             ? {}
@@ -728,11 +746,11 @@ export const useApp = create<State>()(
 
       startDraw: () => set({
         drawing: true, drawMode: 'zone', draft: [], manualParcelDraft: null, selectedId: null,
-        splitParcelId: null, splitDraft: [],
+        splitParcelId: null, splitDraft: [], splitSaving: false,
       }),
       startParcelDraw: () => set({
         drawing: true, drawMode: 'parcel', draft: [], manualParcelDraft: null, selectedId: null,
-        splitParcelId: null, splitDraft: [],
+        splitParcelId: null, splitDraft: [], splitSaving: false,
       }),
       addDraftPoint: (p) => set((s) => ({ draft: [...s.draft, p] })),
       undoDraft: () => set((s) => ({ draft: s.draft.slice(0, -1) })),

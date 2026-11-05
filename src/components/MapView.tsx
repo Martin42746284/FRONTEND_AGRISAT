@@ -48,6 +48,18 @@ function pinIcon(color: string, scale: number): google.maps.Symbol {
   };
 }
 
+/** Style d'un sommet de la coupe : extrémités plus visibles que les points intermédiaires. */
+function splitVertexIcon(end: boolean): google.maps.Symbol {
+  return {
+    path: google.maps.SymbolPath.CIRCLE,
+    scale: end ? 7 : 5,
+    fillColor: '#fff',
+    fillOpacity: 1,
+    strokeColor: '#B60319',
+    strokeWeight: end ? 3 : 2,
+  };
+}
+
 /** Contenu texte de la bulle : jamais de HTML interpolé avec un nom saisi. */
 function locationInfo(title: string, lat: number, lng: number, kind: 'borne' | 'coords'): HTMLElement {
   const root = document.createElement('div');
@@ -826,15 +838,24 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
   // Scission manuelle : ligne de coupe accrochée au contour et aperçu des deux
   // parties obtenues, pour suivre la limite réelle avant de valider.
   useEffect(() => {
-    splitLine.current?.setMap(null);
-    splitLine.current = null;
-    splitMarkers.current.forEach((marker) => marker.setMap(null));
-    splitMarkers.current = [];
-    splitParts.current.forEach((layer) => layer.setMap(null));
-    splitParts.current = [];
-    if (!map || !splitParcelId) return;
+    const clearOverlays = () => {
+      splitLine.current?.setMap(null);
+      splitLine.current = null;
+      splitMarkers.current.forEach((marker) => marker.setMap(null));
+      splitMarkers.current = [];
+      splitParts.current.forEach((layer) => layer.setMap(null));
+      splitParts.current = [];
+    };
+
+    if (!map || !splitParcelId) {
+      clearOverlays();
+      return;
+    }
     const parcel = latest.current.parcels.get(splitParcelId);
-    if (!parcel) return;
+    if (!parcel) {
+      clearOverlays();
+      return;
+    }
 
     // Le dernier clic est accroché au contour comme le premier : une coupe se
     // termine sur la limite de la parcelle, pas à quelques mètres à l'intérieur.
@@ -846,52 +867,102 @@ export default function MapView({ baseIds }: { baseIds: Set<string> }) {
       }
     }
 
+    // Les objets Google Maps sont réutilisés d'un clic à l'autre : recréer la
+    // ligne, les sommets et les deux polygones à chaque point rendait la pose
+    // saccadée sur les parcelles de plusieurs milliers de sommets.
     if (draft.length >= 2) {
-      splitLine.current = new google.maps.Polyline({
-        map,
-        path: draft.map(([lat, lng]) => ({ lat, lng })),
-        strokeColor: '#B60319', strokeOpacity: 1, strokeWeight: 3,
-        clickable: false, zIndex: 1300,
-      });
+      if (!splitLine.current) {
+        splitLine.current = new google.maps.Polyline({
+          strokeColor: '#0F172A', strokeOpacity: 0.95, strokeWeight: 4,
+          clickable: false, zIndex: 1300,
+        });
+      }
+      splitLine.current.setPath(draft.map(([lat, lng]) => ({ lat, lng })));
+      splitLine.current.setMap(map);
+    } else {
+      splitLine.current?.setMap(null);
+    }
+
+    while (splitMarkers.current.length > draft.length) {
+      splitMarkers.current.pop()?.setMap(null);
     }
     draft.forEach(([lat, lng], index) => {
       const end = index === 0 || index === draft.length - 1;
-      splitMarkers.current.push(new google.maps.Marker({
-        map,
-        position: { lat, lng },
-        clickable: false,
-        zIndex: google.maps.Marker.MAX_ZINDEX + 1,
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: end ? 7 : 5,
-          fillColor: '#fff', fillOpacity: 1,
-          strokeColor: '#B60319', strokeWeight: end ? 3 : 2,
-        },
-      }));
+      let marker = splitMarkers.current[index];
+      if (!marker) {
+        const created = new google.maps.Marker({
+          map,
+          position: { lat, lng },
+          draggable: true,
+          clickable: true,
+          cursor: 'grab',
+          zIndex: google.maps.Marker.MAX_ZINDEX + 1,
+          title: end ? 'Extrémité de la coupe — glissez pour ajuster' : 'Sommet de la coupe — glissez pour ajuster',
+          icon: splitVertexIcon(end),
+        });
+        created.set('splitIndex', index);
+        created.set('splitEnd', end);
+        created.addListener('dragend', () => {
+          const at = Number(created.get('splitIndex'));
+          const position = created.getPosition();
+          if (!Number.isFinite(at) || at < 0 || !position) return;
+          const state = useApp.getState();
+          if (!state.splitParcelId) return;
+          const currentParcel = latest.current.parcels.get(state.splitParcelId);
+          const lastIndex = state.splitDraft.length - 1;
+          let next: LatLng = [position.lat(), position.lng()];
+          // Seules les extrémités doivent rester sur le contour ; les sommets
+          // intermédiaires peuvent suivre librement un talus ou un chemin.
+          if (currentParcel && (at === 0 || at === lastIndex)) {
+            const snapped = snapToRing(next, currentParcel.coords, SPLIT_SNAP_TOLERANCE_M);
+            if (snapped) next = snapped.point;
+          }
+          state.moveSplitPoint(at, next);
+        });
+        splitMarkers.current[index] = created;
+        marker = created;
+      } else {
+        marker.setMap(map);
+      }
+      marker.set('splitIndex', index);
+      marker.setPosition({ lat, lng });
+      if (marker.get('splitEnd') !== end) {
+        marker.set('splitEnd', end);
+        marker.setIcon(splitVertexIcon(end));
+        marker.setTitle(end ? 'Extrémité de la coupe — glissez pour ajuster' : 'Sommet de la coupe — glissez pour ajuster');
+      }
     });
 
     const preview = splitParcelByCut(parcel.coords, draft);
     if (preview.ok) {
-      for (const part of preview.parts) {
-        splitParts.current.push(new google.maps.Polygon({
-          map,
-          paths: part.map(([lat, lng]) => ({ lat, lng })),
-          strokeColor: '#03793C', strokeOpacity: 1, strokeWeight: 2,
-          fillColor: '#03793C', fillOpacity: 0.12,
-          clickable: false, zIndex: 1250,
-        }));
+      for (let i = 0; i < 2; i += 1) {
+        let layer = splitParts.current[i];
+        if (!layer) {
+          const color = i === 0 ? '#0EA5E9' : '#F97316';
+          layer = new google.maps.Polygon({
+            strokeColor: color, strokeOpacity: 1, strokeWeight: 2,
+            fillColor: color, fillOpacity: 0.22,
+            clickable: false, zIndex: 1250,
+          });
+          splitParts.current[i] = layer;
+        }
+        layer.setPaths(preview.parts[i].map(([lat, lng]) => ({ lat, lng })));
+        layer.setMap(map);
       }
-    }
-
-    return () => {
-      splitLine.current?.setMap(null);
-      splitLine.current = null;
-      splitMarkers.current.forEach((marker) => marker.setMap(null));
-      splitMarkers.current = [];
+    } else {
       splitParts.current.forEach((layer) => layer.setMap(null));
-      splitParts.current = [];
-    };
+    }
   }, [map, splitParcelId, splitDraft, parcels]);
+
+  // Nettoyage des overlays de scission quand la carte est démontée.
+  useEffect(() => () => {
+    splitLine.current?.setMap(null);
+    splitLine.current = null;
+    splitMarkers.current.forEach((marker) => marker.setMap(null));
+    splitMarkers.current = [];
+    splitParts.current.forEach((layer) => layer.setMap(null));
+    splitParts.current = [];
+  }, []);
 
   // Curseur en croix pendant le tracé de la coupe.
   useEffect(() => {
