@@ -13,7 +13,7 @@ import type { Analysis, AuditEntry, Commune, LatLng, Parcel, Region, User } from
 import { request } from './http';
 import { maltoConfigured } from './services';
 import { maltoToFrontend, type MaltoParcel } from './maltoAdapter';
-import { convexHull, scaleAround, centroidOf, ringAreaHa } from '../lib/geometry';
+import { convexHull, scaleAround, centroidOf, isSameParcelFootprint, ringAreaHa } from '../lib/geometry';
 import { REJECTED_PARCEL_SOURCE } from '../lib/parcel-sources';
 import type { RejectedParcel } from '../lib/rejections';
 
@@ -59,6 +59,39 @@ function deriveZones(parcels: Parcel[]): { regions: Region[]; communes: Commune[
     cloudCover: 0,
   };
   return { regions: [region], communes: [commune] };
+}
+
+/**
+ * Fusionne les lignes qui décrivent exactement la même parcelle.
+ *
+ * Une même parcelle peut exister plusieurs fois en base (contour importé puis
+ * tracé manuel, réanalyses successives…). Sans fusion, la carte et les tableaux
+ * affichaient deux cultures superposées. On garde la ligne la mieux renseignée
+ * et on récupère les résultats des autres, pour ne rien perdre.
+ */
+function dedupeSameParcels(parcels: Parcel[]): Parcel[] {
+  const score = (p: Parcel) =>
+    (p.cultureDetail ? 100 : 0)
+    + Object.values(p.results).filter((result) => result.culture !== 'inconnue').length * 10
+    + (p.createdAt ? new Date(p.createdAt).getTime() / 1e15 : 0);
+  const kept: Parcel[] = [];
+  for (const parcel of parcels) {
+    const index = kept.findIndex((candidate) => isSameParcelFootprint(candidate, parcel));
+    if (index === -1) {
+      kept.push(parcel);
+      continue;
+    }
+    const current = kept[index];
+    const keeper = score(parcel) > score(current) ? parcel : current;
+    const other = keeper === parcel ? current : parcel;
+    kept[index] = {
+      ...keeper,
+      cultureDetail: keeper.cultureDetail ?? other.cultureDetail,
+      results: { ...other.results, ...keeper.results },
+      corrections: [...other.corrections, ...keeper.corrections],
+    };
+  }
+  return kept;
 }
 
 /** Assigne chaque parcelle à la commune/région dérivée (tout est dedans par construction). */
@@ -112,7 +145,7 @@ export async function bootstrapReal(): Promise<BootstrapDb> {
       at: row.created_at ?? new Date().toISOString(),
     });
   }
-  const ftw = maltoToFrontend(kept);
+  const ftw = dedupeSameParcels(maltoToFrontend(kept));
 
   // Plus de pré-chargement statique VHR en base : les délimitations affichées
   // proviennent des imports KML, des tracés manuels et de la détection Gemini.

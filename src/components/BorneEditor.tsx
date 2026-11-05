@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Loader2, MapPin, X } from 'lucide-react';
+import { Check, Crosshair, Loader2, MapPin, X } from 'lucide-react';
 import { useApp } from '../store/useApp';
 
 function fmt(value: number): string {
@@ -10,7 +10,8 @@ function fmt(value: number): string {
  * Carte de saisie affichée après un clic sur la carte en mode placement.
  *
  * Le point est déjà matérialisé sur la carte (marqueur brouillon) ; cette carte
- * ne demande que le nom, puis enregistre la borne en base.
+ * ne demande que le nom, puis enregistre la borne en base. Elle est centrée
+ * dans la zone de carte, au-dessus de laquelle elle flotte.
  */
 export default function BorneEditor() {
   const placement = useApp((s) => s.bornePlacement);
@@ -40,7 +41,9 @@ export default function BorneEditor() {
           </button>
         </header>
         <p className="hint">Cliquez sur la carte à l'emplacement de la borne, puis donnez-lui un nom.</p>
-        <button className="btn btn--sm" type="button" onClick={cancelPlacement}>Annuler</button>
+        <div className="bornecard__actions">
+          <button className="btn btn--sm" type="button" onClick={cancelPlacement}>Annuler</button>
+        </div>
       </section>
     );
   }
@@ -72,7 +75,11 @@ export default function BorneEditor() {
           <X size={15} />
         </button>
       </header>
-      <p className="bornecard__coords">{fmt(draft[0])}, {fmt(draft[1])}</p>
+      <p className="bornecard__coords">
+        <Crosshair size={14} aria-hidden />
+        <b>Coordonnées</b>
+        <span>{fmt(draft[0])}, {fmt(draft[1])}</span>
+      </p>
       <form className="bornecard__form" onSubmit={(event) => void submit(event)}>
         <label className="field">
           <span>Nom de la borne</span>
@@ -80,8 +87,12 @@ export default function BorneEditor() {
             autoFocus
             maxLength={120}
             value={name}
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) => {
+              setName(event.target.value);
+              setError(null);
+            }}
             placeholder="Ex. Borne nord du champ"
+            aria-invalid={error ? true : undefined}
             disabled={saving}
           />
         </label>

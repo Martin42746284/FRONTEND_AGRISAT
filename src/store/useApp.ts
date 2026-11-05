@@ -10,7 +10,7 @@ import {
   type CreateMaltoParcelPayload, type ParcelUpdate,
 } from '../api/services';
 import { maltoToFrontend, maltoVhrToFrontend, type MaltoParcel, type MaltoVhrFeature } from '../api/maltoAdapter';
-import { centroidOf, isDuplicateVhrParcel, pointInPolygon, ringAreaHa } from '../lib/geometry';
+import { centroidOf, isDuplicateVhrParcel, isSameParcelFootprint, pointInPolygon, ringAreaHa } from '../lib/geometry';
 import {
   analyzedParcelIds, cultureCountsForAnalysis, isAnalyzedParcel, parcelIdsOfAnalysis,
   parcelsForAnalysis, pendingCultureParcelsForAnalysis, toTracedParcelInput,
@@ -945,41 +945,53 @@ export const useApp = create<State>()(
         const s = get();
         const parcel = s.parcels.find((p) => p.id === id);
         if (!parcel) return;
-        const hasCulture = !!parcel.cultureDetail
-          || Object.values(parcel.results).some((result) => result.culture !== 'inconnue');
-        if (!hasCulture) {
+        if (!parcelHasCulture(parcel)) {
           s.toast('Aucune culture enregistrée à supprimer sur cette parcelle.', 'warn');
           return;
         }
 
+        // Des lignes doublons peuvent décrire la même parcelle (contour importé +
+        // tracé manuel, réanalyses successives…). Supprimer la culture d'une seule
+        // ligne laissait l'autre culture visible sur la carte : toutes les lignes
+        // qui recouvrent exactement ce champ sont donc vidées ensemble.
+        const related = s.parcels.filter((p) =>
+          p.id === id || (parcelHasCulture(p) && isSameParcelFootprint(p, parcel)),
+        );
+        const originals = new Map(related.map((p) => [p.id, p]));
         // La parcelle et son contour sont conservés : seuls les résultats culturaux
         // repassent en « non classé », comme une parcelle sans culture relue en base.
-        const seasonIds = Object.keys(parcel.results);
-        const cleared: Parcel = {
-          ...parcel,
-          cultureDetail: undefined,
-          results: Object.fromEntries(
-            (seasonIds.length ? seasonIds : [s.filters.seasonId])
-              .map((seasonId) => [seasonId, clearedCultureResult(seasonId)]),
+        set({
+          parcels: s.parcels.map((p) =>
+            originals.has(p.id) ? withoutParcelCulture(p, s.filters.seasonId) : p,
           ),
-        };
-        set({ parcels: s.parcels.map((p) => (p.id === id ? cleared : p)) });
+        });
         get().logAudit('Suppression de la culture', `Parcelle ${id}`);
 
-        if (!isDatabaseParcelId(id)) {
+        const persisted = related.filter((p) => isDatabaseParcelId(p.id));
+        if (!persisted.length) {
           get().toast('Culture retirée. La parcelle reste sur la carte.', 'ok');
           return;
         }
 
-        try {
-          await api.deleteParcelCulture(id);
-          get().toast('Culture supprimée en base — la parcelle est conservée.', 'ok');
-        } catch (err) {
-          console.warn('[AgriSat] Suppression de la culture impossible :', err);
-          // Le serveur fait foi : on remet la parcelle dans son état précédent.
-          set((st) => ({ parcels: st.parcels.map((p) => (p.id === id ? parcel : p)) }));
+        const failures = new Set<string>();
+        await Promise.all(persisted.map(async (p) => {
+          try {
+            await api.deleteParcelCulture(p.id);
+          } catch (err) {
+            failures.add(p.id);
+            console.warn(`[AgriSat] Suppression de la culture impossible pour ${p.id} :`, err);
+          }
+        }));
+
+        if (failures.size) {
+          // Le serveur fait foi : seules les lignes non enregistrées sont restaurées.
+          set((st) => ({
+            parcels: st.parcels.map((p) => failures.has(p.id) ? originals.get(p.id) ?? p : p),
+          }));
           get().toast('Suppression de la culture impossible : la parcelle est inchangée.', 'danger');
+          return;
         }
+        get().toast('Culture supprimée en base — la parcelle est conservée.', 'ok');
       },
 
       analyzeParcel: async (id, options) => {
@@ -1398,6 +1410,28 @@ function mergeCaptureHistory(fromDb: Analysis[], history: Analysis[]): Analysis[
   const known = new Set(fromDb.map((a) => a.id));
   return [...history.filter((a) => !known.has(a.id)), ...fromDb]
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+
+/** Vrai si la parcelle porte encore une culture (en base ou pour une saison). */
+function parcelHasCulture(parcel: Parcel): boolean {
+  return !!parcel.cultureDetail
+    || Object.values(parcel.results).some((result) => result.culture !== 'inconnue');
+}
+
+/**
+ * Copie d'une parcelle dont toute la culture est effacée (fiche et résultats),
+ * le contour, l'identité et la superficie restant intacts.
+ */
+function withoutParcelCulture(parcel: Parcel, fallbackSeasonId: string): Parcel {
+  const seasonIds = Object.keys(parcel.results);
+  return {
+    ...parcel,
+    cultureDetail: undefined,
+    results: Object.fromEntries(
+      (seasonIds.length ? seasonIds : [fallbackSeasonId])
+        .map((seasonId) => [seasonId, clearedCultureResult(seasonId)]),
+    ),
+  };
 }
 
 /**
