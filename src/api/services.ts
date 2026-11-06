@@ -13,7 +13,7 @@
  * Configuration (fichier .env à la racine, cf. .env.example) :
  *   VITE_MALTO_API_URL=http://localhost:3001   ← sans slash final
  */
-import type { Analysis, AuditEntry, Commune, Parcel, Region, User } from '../types';
+import type { Analysis, AuditEntry, BorneGps, Commune, Parcel, Region, User } from '../types';
 import { request, API_BASE } from './http';
 import { bootstrapReal } from './realBootstrap';
 import type { MaltoParcel } from './maltoAdapter';
@@ -68,6 +68,19 @@ export interface ParcelUpdate {
   verdict?: string;
   details?: string;
   saison?: string;
+}
+
+/**
+ * Payload PATCH /api/parcelles/{id} — nouveau contour d'une parcelle.
+ *
+ * Une scission manuelle conserve sa ligne en base pour la partie qui garde
+ * l'identité de la parcelle ; le contour, le centre et la superficie la suivent.
+ */
+export interface ParcelGeometryUpdate {
+  coordinates: Array<{ lat: number; lng: number }>;
+  center_lat: number;
+  center_lng: number;
+  surface_ha: number;
 }
 
 /** Création d'une entrée d'audit (journal des actions utilisateurs). */
@@ -171,6 +184,8 @@ export interface AutomaticDetectionResult {
   period_days: number;
   candidates_found: number;
   analyzed_count: number;
+  /** Candidats ignorés car déjà analysés et enregistrés en base. */
+  already_analyzed_count?: number;
   parcels: AutomaticDetectionParcel[];
   notice: string | null;
 }
@@ -231,6 +246,74 @@ export interface ZoneParcelsResult {
   [k: string]: unknown;
 }
 
+/** Palier réel de la capture / détection, relayé par le flux NDJSON. */
+export interface GeminiParcelsProgress {
+  percent: number;
+  label: string;
+}
+
+/** Payload POST /api/gemini-parcels — capture satellite + détection des parcelles. */
+export interface GeminiParcelsPayload {
+  latitude: number;
+  longitude: number;
+  /** Largeur de la zone capturée, en mètres (100 m par défaut). */
+  span_m?: number;
+  /**
+   * Largeur d'une tuile de la mosaïque, en mètres (20 m par défaut). Quand elle
+   * est inférieure à `span_m`, la capture est assemblée à partir de plusieurs
+   * tuiles pour conserver le détail métrique sur une zone plus large.
+   */
+  tile_span_m?: number;
+  /** Zoom imposé au lieu du zoom calculé pour `span_m`. */
+  zoom?: number;
+  /** `false` : renvoie les contours sans les enregistrer (aperçu). */
+  persist?: boolean;
+  /** Largeur en pixels de la vue écran visible à capturer. */
+  viewport_width?: number;
+  /** Hauteur en pixels de la vue écran visible à capturer. */
+  viewport_height?: number;
+  /** Coordonnées géographiques de la zone écran visible. */
+  bounds?: { south: number; west: number; north: number; east: number };
+}
+
+export interface GeminiCapture {
+  center: { lat: number; lng: number };
+  zoom: number;
+  span_m: number;
+  size_px: number;
+  /** Nombre de tuiles par côté (1 = capture simple, 5 = mosaïque 5×5). */
+  tiles: number;
+  /** Largeur d'une tuile de la mosaïque, en mètres. */
+  tile_span_m: number;
+  /** Prétraitement appliqué avant l'analyse : off, light ou strong. */
+  enhancement?: 'off' | 'light' | 'strong' | string;
+  bounds: { south: number; west: number; north: number; east: number };
+  /** Image satellite capturée, en data URL PNG. */
+  image_data_url: string;
+}
+
+/** Parcelle déjà en base jugée identique à un contour détecté (aucune ligne créée). */
+export interface GeminiExistingParcel {
+  id: string;
+  label: string | null;
+  surface_ha: number | null;
+}
+
+export interface GeminiParcelsResult {
+  capture: GeminiCapture;
+  /** Lignes `parcelles` enregistrées (ou aperçu si `persist=false`). */
+  parcels: MaltoParcel[];
+  existing: GeminiExistingParcel[];
+  summary: {
+    detected: number;
+    valid: number;
+    created: number;
+    duplicates: number;
+    rejected: number;
+  };
+  warnings: string[];
+}
+
 export interface CreateMaltoParcelPayload {
   label: string;
   coordinates: Array<{ lat: number; lng: number }>;
@@ -238,35 +321,35 @@ export interface CreateMaltoParcelPayload {
   center_lng: number;
   surface_ha: number;
   culture_declared: string;
-  culture_detected: null;
-  ndvi_percentage: null;
-  ndre: null;
-  spectral_bands: null;
-  confidence: null;
+  culture_detected: string | null;
+  ndvi_percentage: number | null;
+  ndre: number | null;
+  spectral_bands: Record<string, number | null> | null;
+  confidence: number | null;
   verdict: string;
   details: string;
-  saison: null;
-  soil_type: null;
+  saison: string | null;
+  soil_type: string | null;
   risk_factors: string[];
-  recommendations: null;
+  recommendations: string | null;
   data_source: string;
   owner_name: string;
   notes: string;
   time_series_s2: unknown[];
   time_series_s1: unknown[];
   time_series_rain: unknown[];
-  estimated_planting_date: null;
-  estimated_harvest_date: null;
-  days_since_planting: null;
-  growth_stage: null;
-  planting_confidence: null;
-  evi: null;
-  savi: null;
-  ndwi: null;
-  agro_score: null;
-  hybrid_score: null;
-  cnn_prob_barley: null;
-  cnn_prob_non_barley: null;
+  estimated_planting_date: string | null;
+  estimated_harvest_date: string | null;
+  days_since_planting: number | null;
+  growth_stage: string | null;
+  planting_confidence: number | null;
+  evi: number | null;
+  savi: number | null;
+  ndwi: number | null;
+  agro_score: number | null;
+  hybrid_score: number | null;
+  cnn_prob_barley: number | null;
+  cnn_prob_non_barley: number | null;
 }
 
 /** Payload POST /api/parcelles/analyze — analyse d'une seule parcelle. */
@@ -291,6 +374,33 @@ export interface AnalyzeParcelResult {
   created: boolean;
   /** Vrai si la parcelle avait déjà été analysée (données conservées). */
   already_analyzed: boolean;
+}
+
+/** Réponse brute de l'API bornes GPS (colonnes snake_case de la base). */
+interface BorneGpsDto {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateBorneGpsPayload {
+  name: string;
+  lat: number;
+  lng: number;
+}
+
+function toBorneGps(dto: BorneGpsDto): BorneGps {
+  return {
+    id: dto.id,
+    name: dto.name,
+    lat: dto.lat,
+    lng: dto.lng,
+    createdAt: dto.created_at,
+    updatedAt: dto.updated_at,
+  };
 }
 
 export const api = {
@@ -332,10 +442,14 @@ export const api = {
   },
 
   /** Détection automatique de parcelles (GDD + base parcelles). */
-  async detectParcels(payload: DetectParcelsPayload): Promise<AutomaticDetectionResult> {
+  async detectParcels(
+    payload: DetectParcelsPayload,
+    signal?: AbortSignal,
+  ): Promise<AutomaticDetectionResult> {
     return request<AutomaticDetectionResult>('/api/detect-parcels', {
       method: 'POST',
       body: JSON.stringify(payload),
+      signal: signal ?? null,
     }, DETECT_PARCELS_TIMEOUT_MS);
   },
 
@@ -347,11 +461,106 @@ export const api = {
    * déjà analysée conserve ses données (le serveur répond 409) sauf si
    * `force` est demandé (relance explicite de l'utilisateur).
    */
-  async analyzeParcel(payload: AnalyzeParcelPayload): Promise<AnalyzeParcelResult> {
+  async analyzeParcel(payload: AnalyzeParcelPayload, signal?: AbortSignal): Promise<AnalyzeParcelResult> {
     return request<AnalyzeParcelResult>('/api/parcelles/analyze', {
       method: 'POST',
       body: JSON.stringify(payload),
+      signal: signal ?? null,
     }, ANALYZE_PARCEL_TIMEOUT_MS);
+  },
+
+  /**
+   * Capture une image satellite (~100 m) autour d'un point, la fait analyser par
+   * Gemini puis enregistre les parcelles détectées. Les contours déjà présents en
+   * base ne sont pas dupliqués.
+   */
+  async geminiParcels(payload: GeminiParcelsPayload, signal?: AbortSignal): Promise<GeminiParcelsResult> {
+    return request<GeminiParcelsResult>('/api/gemini-parcels', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal: signal ?? null,
+    }, GEMINI_PARCELS_TIMEOUT_MS);
+  },
+
+  /**
+   * Même détection que `geminiParcels`, mais en flux NDJSON : chaque palier
+   * transmis par le backend correspond à un travail réellement terminé
+   * (tuiles téléchargées, fenêtres Gemini, écriture en base).
+   */
+  async geminiParcelsStream(
+    payload: GeminiParcelsPayload,
+    onProgress: (progress: GeminiParcelsProgress) => void,
+    signal?: AbortSignal,
+  ): Promise<GeminiParcelsResult> {
+    const ctrl = new AbortController();
+    const external = signal ?? null;
+    const onAbort = () => ctrl.abort();
+    if (external?.aborted) ctrl.abort();
+    else external?.addEventListener('abort', onAbort);
+    const timer = setTimeout(() => ctrl.abort(), GEMINI_PARCELS_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/gemini-parcels/stream`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/x-ndjson',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        const reason = detail?.detail ?? detail?.error;
+        throw new Error(`Malto ${res.status} ${res.statusText}${reason ? ` — ${reason}` : ''}`);
+      }
+      if (!res.body) throw new Error('Flux de progression indisponible sur ce navigateur.');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let result: GeminiParcelsResult | null = null;
+
+      const handleLine = (raw: string) => {
+        if (!raw.trim()) return;
+        const event = JSON.parse(raw) as
+          | { type: 'progress'; percent: number; label: string }
+          | { type: 'result'; result: GeminiParcelsResult }
+          | { type: 'error'; error: string };
+        if (event.type === 'progress') {
+          onProgress({ percent: event.percent, label: event.label });
+        } else if (event.type === 'result') {
+          result = event.result;
+        } else {
+          throw new Error(`Malto — ${event.error}`);
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline = buffer.indexOf('\n');
+        while (newline >= 0) {
+          handleLine(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+          newline = buffer.indexOf('\n');
+        }
+      }
+      handleLine(buffer);
+
+      if (!result) throw new Error('Le serveur n’a pas renvoyé le résultat de la détection.');
+      return result;
+    } catch (err) {
+      if (external?.aborted) throw new Error('Requête annulée : /api/gemini-parcels/stream');
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw new Error(`Malto — délai dépassé sur /api/gemini-parcels/stream (${GEMINI_PARCELS_TIMEOUT_MS / 1000}s).`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      external?.removeEventListener('abort', onAbort);
+    }
   },
 
   /**
@@ -366,10 +575,48 @@ export const api = {
     }, ZONE_PARCELS_TIMEOUT_MS);
   },
 
+    /** Liste les bornes GPS enregistrées (filtre optionnel par nom). */
+    async listBornesGps(query?: string): Promise<BorneGps[]> {
+      const suffix = query?.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
+      const rows = await request<BorneGpsDto[]>(`/api/bornes-gps${suffix}`, {}, 30_000);
+      return rows.map(toBorneGps);
+    },
+
+    /** Enregistre une nouvelle borne GPS. */
+    async createBorneGps(payload: CreateBorneGpsPayload): Promise<BorneGps> {
+      const row = await request<BorneGpsDto>('/api/bornes-gps', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }, 30_000);
+      return toBorneGps(row);
+    },
+
+    /** Renomme une borne GPS existante. */
+    async renameBorneGps(id: string, name: string): Promise<BorneGps> {
+      const row = await request<BorneGpsDto>(`/api/bornes-gps/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      }, 30_000);
+      return toBorneGps(row);
+    },
+
+    /** Supprime une borne GPS. */
+    async deleteBorneGps(id: string): Promise<void> {
+      await request<void>(`/api/bornes-gps/${encodeURIComponent(id)}`, { method: 'DELETE' }, 30_000);
+    },
+
     /** Enregistre dans Malto une parcelle dessinée manuellement sur la carte. */
     async createParcel(payload: CreateMaltoParcelPayload): Promise<Record<string, unknown>> {
       return request<Record<string, unknown>>('/api/parcelles', {
         method: 'POST',
+        body: JSON.stringify(payload),
+      }, 30_000);
+    },
+
+    /** Enregistre le nouveau contour d'une parcelle (scission manuelle). */
+    async updateParcelGeometry(id: string, payload: ParcelGeometryUpdate): Promise<Record<string, unknown>> {
+      return request<Record<string, unknown>>(`/api/parcelles/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
         body: JSON.stringify(payload),
       }, 30_000);
     },
@@ -429,3 +676,4 @@ const ANALYZE_TIMEOUT_MS = 240_000;
 const DETECT_PARCELS_TIMEOUT_MS = 600_000;
 const ANALYZE_PARCEL_TIMEOUT_MS = 240_000;
 const ZONE_PARCELS_TIMEOUT_MS = 600_000; // mode « mix » ≈ 5–7 min
+const GEMINI_PARCELS_TIMEOUT_MS = 480_000; // capture Static Maps + analyse Gemini de ~9 fenêtres

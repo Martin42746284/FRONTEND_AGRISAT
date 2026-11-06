@@ -6,8 +6,8 @@ import { ROLES } from '../data/constants';
 import { activeFilterCount } from '../lib/filter';
 import type { Role } from '../types';
 import ParcelDrawer from './ParcelDrawer';
-import MapToolbar from './MapToolbar';
 import ExportMenu from './ExportMenu';
+import PageHeader from './PageHeader';
 import { Toasts } from './ui';
 
 function UserMenu() {
@@ -25,7 +25,7 @@ function UserMenu() {
   const initials = user.name.split(' ').map((w) => w[0]).slice(0, 2).join('');
   return (
     <div className="menu" ref={ref}>
-      <button className="avatar glass" onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open} aria-label="Menu utilisateur">{initials}</button>
+      <button className="avatar" onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open} aria-label="Menu utilisateur">{initials}</button>
       {open && (
         <div className="menu__list glass" role="menu">
           <div className="menu__who"><b>{user.name}</b><span>{ROLES[user.role].label}</span></div>
@@ -66,18 +66,11 @@ export default function AppShell() {
   ].filter((i) => i.show);
 
   return (
-    <div className={`shell ${onMap ? 'shell--map' : ''}`}>
+    <div className={`shell ${onMap ? 'shell--map' : ''} ${pathname === '/analyses' ? 'shell--analyses' : ''}`}>
       <main className="shell__page"><Outlet /></main>
 
-      {onMap && (
-        <div className="brandchip glass">
-          <img src="/remove.png" width="72" height="72" alt="Logo AGRISAT" />
-          <div>
-            <strong>AGRISAT</strong>
-            <span>Agricultural Remote Sensing &amp; Detection</span>
-          </div>
-        </div>
-      )}
+
+      {onMap && <img className="brandchip" src="/malt.png" width={120} height={40} alt="Logo MALTO" />}
 
       <nav className="dock glass" aria-label="Navigation principale">
         {items.map((i) => (
@@ -86,6 +79,8 @@ export default function AppShell() {
           </NavLink>
         ))}
       </nav>
+
+      {!onMap && <PageHeader />}
 
       <div className="topright">
         {onMap && (
@@ -100,7 +95,6 @@ export default function AppShell() {
       </div>
 
       <ParcelDrawer />
-      <MapToolbar canLaunch={can?.analyze !== undefined || true} onAnalyze={() => alert('Analyse non implémentée dans ce layout')} />
       <Toasts />
     </div>
   );

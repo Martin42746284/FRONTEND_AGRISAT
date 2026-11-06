@@ -15,6 +15,7 @@ Aucune variable d'environnement. Les fonds de carte (OSM, Esri) nécessitent Int
 | Exigence | Où |
 |---|---|
 | Carte, recherche de lieu, retour national, plan/satellite | `MapView`, `MapToolbar` |
+| Bornes GPS nommées, recherche par nom ou coordonnées | `BorneEditor`, `MapView`, `MapToolbar`, `lib/coordinates.ts` |
 | Zone d'étude dessinée (sommets déplaçables, suppression) | `MapToolbar`, `MapView` |
 | Filtre par culture (ex. orge), plusieurs cultures, couleurs libres en temps réel (REC-05/06) | `CultureRail`, `lib/style.ts` |
 | Vues générale / filtrée (griser ou masquer) / comparative + légende (REC-07) | `MapPage`, `Legend` |

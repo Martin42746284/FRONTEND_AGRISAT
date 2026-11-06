@@ -1,14 +1,27 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type {
-  Analysis, AuditEntry, Commune, CropResult, CultureId, Filters, LatLng, Parcel, Region, Role, User,
+  Analysis, AnalysisParcel, AuditEntry, AutomaticSearchEntry, BorneGps, Commune, CropResult, CultureId, Filters, LatLng, Parcel, Region, Role,
+  SearchedLocation, User,
 } from '../types';
-import { AREA_MAX, DEFAULT_COLORS, DEFAULT_SEASON, PIPELINE_STEPS, CURRENT_MODEL, ROLES } from '../data/constants';
-import { api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectionResult, type ParcelUpdate, type AuditEntryCreate } from '../api/services';
-import { maltoToFrontend, maltoVhrToFrontend, type MaltoVhrFeature } from '../api/maltoAdapter';
-import { centroidOf, isDuplicateVhrParcel, pointInPolygon, ringAreaHa } from '../lib/geometry';
-import { analyzedParcelIds, parcelsForAnalysis, toTracedParcelInput } from '../lib/analysis-parcels';
-import { isImportedKmlParcel, isManualParcel, REJECTED_PARCEL_SOURCE } from '../lib/parcel-sources';
+import { AREA_MAX, CULTURE_BY_ID, DEFAULT_COLORS, DEFAULT_SEASON, PIPELINE_STEPS, CURRENT_MODEL, ROLES } from '../data/constants';
+import {
+  api, maltoConfigured, type AnalyzeSimpleFeature, type AutomaticDetectionResult, type AuditEntryCreate,
+  type CreateMaltoParcelPayload, type ParcelUpdate,
+} from '../api/services';
+import { maltoToFrontend, maltoVhrToFrontend, type MaltoParcel, type MaltoVhrFeature } from '../api/maltoAdapter';
+import { centroidOf, isDuplicateVhrParcel, isSameParcelFootprint, pointInPolygon, ringAreaHa } from '../lib/geometry';
+import {
+  analyzedParcelIds, cultureCountsForAnalysis, isAnalyzedParcel, parcelIdsOfAnalysis,
+  parcelsForAnalysis, pendingCultureParcelsForAnalysis, toTracedParcelInput,
+} from '../lib/analysis-parcels';
+import { correctionText, withCorrectedClass } from '../lib/culture-sync';
+import { captureThumbnail } from '../lib/capture-image';
+import { statusFromConfidence } from '../lib/parcel-status';
+import {
+  isExplicitParcel, isManualParcel, REJECTED_PARCEL_SOURCE, SPLIT_PARCEL_SOURCE,
+} from '../lib/parcel-sources';
+import { snapToRing, splitParcelByCut } from '../lib/polygon-split';
 import {
   addRejection, isDatabaseParcelId, isRejectedParcel, mergeRejections, type RejectedParcel,
 } from '../lib/rejections';
@@ -21,6 +34,69 @@ export const DEFAULT_FILTERS: Filters = {
 
 export interface FlyTarget { bounds?: [LatLng, LatLng]; center?: LatLng; zoom?: number; nonce: number }
 export interface Toast { id: number; msg: string; tone: 'ok' | 'info' | 'warn' | 'danger' }
+
+/**
+ * Centre et zoom d'ouverture de la carte : vue rapprochée. La capture Gemini
+ * assemble ensuite des tuiles de 20 m sur ~100 m autour du centre.
+ */
+export const DEFAULT_MAP_CENTER: LatLng = [-19.848219, 47.011882];
+export const DEFAULT_MAP_ZOOM = 21;
+
+/** Zone couverte par la dernière capture Gemini (rectangle affiché sur la carte). */
+export interface GeminiCaptureArea {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+  spanM: number;
+  zoom: number;
+}
+
+/** Nombre maximal de captures conservées dans l'historique local (page « Analyses »). */
+export const MAX_CAPTURE_HISTORY = 40;
+
+/** Nombre maximal de recherches automatiques conservées dans l'historique dédié. */
+export const MAX_AUTOMATIC_SEARCH_HISTORY = 30;
+
+/** Données d'une analyse de terrain à consigner dans l'historique. */
+export interface CaptureAnalysisInput {
+  /** Centre de la zone capturée. */
+  center: LatLng;
+  /** Bornes de la capture (absentes si la requête a échoué). */
+  bounds?: { south: number; west: number; north: number; east: number };
+  spanM: number;
+  zoom: number;
+  /** Image de la capture (data URL) : réduite avant stockage. */
+  imageDataUrl?: string | null;
+  /** Parcelles détectées, avec libellé et emprise. */
+  parcels: AnalysisParcel[];
+  /** Parcelles déjà en base, non dupliquées. */
+  duplicates?: number;
+  warnings?: string[];
+  /** Message d'erreur : l'analyse est consignée en échec. */
+  error?: string;
+}
+
+/** Options d'une analyse unitaire de parcelle. */
+export interface AnalyzeParcelOptions {
+  /** Relance explicite : remplace les données d'une parcelle déjà analysée. */
+  force?: boolean;
+  /** Analyse de lot en arrière-plan : ne bloque pas l'interface et ne change pas la sélection. */
+  background?: boolean;
+  /** Aucun retour unitaire : le lot affiche son propre message à la fin. */
+  silent?: boolean;
+  /** Saison sous laquelle enregistrer le résultat (par défaut, le filtre courant). */
+  seasonId?: string;
+  /** Annulation de la requête en cours (lot d'analyses interrompu par l'utilisateur). */
+  signal?: AbortSignal;
+}
+
+/** Avancement du lot « Analyser les cultures » d'un historique. */
+export interface CultureAnalysisJob {
+  analysisId: string;
+  done: number;
+  total: number;
+}
 
 /** Résumé du dernier traçage automatique (contours IA — à présenter comme indicatifs). */
 export interface TraceInfo {
@@ -43,6 +119,8 @@ interface State {
   colorsByUser: Record<string, Record<CultureId, string>>;
   threshold: number;
   basemap: 'plan' | 'satellite';
+  /** Renforce contraste et saturation de l'imagerie pour lire les limites peu visibles. */
+  readability: boolean;
   showCoverage: boolean;
 
   filters: Filters;
@@ -51,6 +129,63 @@ interface State {
   filtersOpen: boolean;
   setFiltersOpen: (v: boolean) => void;
 
+  /** Centre et zoom courants de la carte (mis à jour à chaque déplacement). */
+  mapCenter: LatLng;
+  mapZoom: number;
+  mapBounds: { south: number; west: number; north: number; east: number } | null;
+  mapSize: { width: number; height: number } | null;
+  setMapView: (
+    center: LatLng,
+    zoom: number,
+    bounds?: { south: number; west: number; north: number; east: number } | null,
+    size?: { width: number; height: number } | null,
+  ) => void;
+  /** Zone couverte par la dernière capture Gemini, matérialisée sur la carte. */
+  geminiCapture: GeminiCaptureArea | null;
+  setGeminiCapture: (capture: GeminiCaptureArea | null) => void;
+
+  /** Bornes GPS enregistrées en base, affichées sur la carte. */
+  bornes: BorneGps[];
+  /** Mode « cliquer sur la carte pour placer une borne ». */
+  bornePlacement: boolean;
+  /** Point choisi, en attente du nom saisi par l'utilisateur. */
+  borneDraft: LatLng | null;
+  /** Borne ou coordonnées mises en évidence après une recherche. */
+  searchedLocation: SearchedLocation | null;
+  startBornePlacement: () => void;
+  cancelBornePlacement: () => void;
+  placeBorneDraft: (point: LatLng) => void;
+  cancelBorneDraft: () => void;
+  saveBorne: (name: string) => Promise<BorneGps>;
+  setSearchedLocation: (location: SearchedLocation | null) => void;
+  /**
+   * Ajoute des parcelles détectées par Gemini (déjà enregistrées en base).
+   * Les identifiants déjà affichés sont ignorés : pas de doublon visuel.
+   */
+  addDetectedParcels: (added: Parcel[]) => number;
+  /**
+   * Historique des analyses de terrain (captures), conservé dans le navigateur :
+   * il reste disponible après un rechargement de la page ou un redémarrage.
+   */
+  captureHistory: Analysis[];
+  /** Consigne une capture de terrain dans la page « Analyses ». */
+  recordCaptureAnalysis: (input: CaptureAnalysisInput) => Promise<void>;
+  /**
+   * Retire une analyse de l'historique et supprime les parcelles qu'elle a créées.
+   * Les parcelles des autres analyses ne sont jamais touchées ; l'analyse n'est
+   * retirée que si toutes ses parcelles ont bien été supprimées de la base.
+   * Renvoie `false` (et conserve l'entrée) en cas d'échec serveur.
+   */
+  deleteAnalysisHistory: (id: string) => Promise<boolean>;
+  /**
+   * Lance en arrière-plan l'analyse des cultures des parcelles d'un historique.
+   * Seules les parcelles encore sans résultat sont traitées ; les autres sont
+   * conservées telles quelles. La navigation reste possible pendant le traitement.
+   */
+  analyzeAnalysisCultures: (id: string) => void;
+  /** Lot d'analyse des cultures en cours, tous historiques confondus. */
+  cultureAnalysisJob: CultureAnalysisJob | null;
+
   drawing: boolean; drawMode: 'zone' | 'parcel'; draft: LatLng[]; zone: LatLng[] | null; manualParcelDraft: LatLng[] | null;
   toasts: Toast[];
   traceInfo: TraceInfo | null;
@@ -58,12 +193,48 @@ interface State {
   rejectedParcels: RejectedParcel[];
   automaticDetection: AutomaticDetectionResult | null;
   automaticSearchCenter: LatLng | null;
+  /** Rayon de l'analyse automatique, en mètres : il définit la zone affichée sur la carte. */
+  automaticSearchRadius: number | null;
   selectedAutomaticParcelId: string | null;
+  /** Historique des recherches automatiques de cultures (Orge / Autre culture). */
+  automaticSearches: AutomaticSearchEntry[];
+  /** Consigne une recherche automatique terminée dans son historique dédié. */
+  recordAutomaticSearch: (input: Omit<AutomaticSearchEntry, 'id' | 'createdAt' | 'createdBy'>) => void;
+  /**
+   * Retire une culture de l'historique des recherches automatiques.
+   * Seule la ligne d'historique est supprimée : la parcelle, son contour et sa
+   * culture en base restent intacts, et l'historique Gemini n'est jamais touché.
+   */
+  deleteAutomaticSearchCulture: (searchId: string, parcelId: string) => void;
+  /**
+   * Vide réellement l'historique des recherches automatiques (toutes les entrées
+   * sont retirées de l'état persistant). Parcelles, cultures en base et
+   * historique des analyses Gemini ne sont pas modifiés.
+   */
+  clearAutomaticSearches: () => void;
 
   /** Édition du contour d'une parcelle (double-clic sur la parcelle dans la carte). */
   editingParcelId: string | null;
   /** Sommets en cours de déplacement — recopiés au save dans `parcels`. */
   editingCoords: LatLng[] | null;
+
+  /**
+   * Scission manuelle : parcelle en cours de découpe et ligne de coupe tracée.
+   * La coupe part du contour, le suit par ses sommets intermédiaires et se
+   * termine sur le contour opposé.
+   */
+  splitParcelId: string | null;
+  splitDraft: LatLng[];
+  /** Une écriture de scission est en cours (retour visuel pendant les appels API). */
+  splitSaving: boolean;
+  startSplitParcel: (id: string) => void;
+  addSplitPoint: (point: LatLng) => void;
+  moveSplitPoint: (index: number, point: LatLng) => void;
+  undoSplitPoint: () => void;
+  clearSplitDraft: () => void;
+  cancelSplitParcel: () => void;
+  /** Enregistre la scission : la parcelle d'origine garde son identité et sa culture. */
+  saveSplitParcel: () => Promise<boolean>;
 
   init: () => Promise<void>;
   /** Recharge les données de la base (bouton « Réessayer » après un échec). */
@@ -77,6 +248,7 @@ interface State {
   resetColors: () => void;
   setThreshold: (v: number) => void;
   setBasemap: (b: 'plan' | 'satellite') => void;
+  setReadability: (v: boolean) => void;
   setShowCoverage: (v: boolean) => void;
   select: (id: string | null) => void;
   flyTo: (t: Omit<FlyTarget, 'nonce'>) => void;
@@ -91,7 +263,13 @@ interface State {
   toast: (msg: string, tone?: Toast['tone']) => void;
   logAudit: (action: string, object: string) => void;
   correctParcel: (id: string, to: CultureId, note: string, kind: 'correction' | 'observation') => void;
-  rejectParcel: (id: string) => Promise<void>;
+  /**
+   * Supprime une parcelle (masquage immédiat + suppression en base).
+   * `silent` évite le retour utilisateur et l'audit unitaires, pour une suppression en lot.
+   */
+  rejectParcel: (id: string, options?: { silent?: boolean }) => Promise<boolean>;
+  /** Supprime plusieurs parcelles en une fois, avec un seul retour utilisateur. */
+  deleteParcels: (ids: string[]) => Promise<void>;
   /** Retire la culture d'une parcelle et conserve la parcelle (contour, superficie, id). */
   removeParcelCulture: (id: string) => Promise<void>;
   createAnalysis: (input: { zoneLabel: string; regionId?: string; communeId?: string; seasonId: string; zone?: LatLng[] | null }) => Analysis;
@@ -103,10 +281,10 @@ interface State {
    * déjà analysée conserve ses données tant que l'utilisateur n'a pas confirmé
    * la relance (`force`).
    */
-  analyzeParcel: (id: string, options?: { force?: boolean }) => Promise<void>;
-  addTracedParcels: (added: Parcel[], info: TraceInfo) => number;
-  setAutomaticDetection: (result: AutomaticDetectionResult | null) => void;
+  analyzeParcel: (id: string, options?: AnalyzeParcelOptions) => Promise<boolean>;
+  addTracedParcels: (added: Parcel[], info: TraceInfo) => number;  setAutomaticDetection: (result: AutomaticDetectionResult | null) => void;
   setAutomaticSearchCenter: (center: LatLng | null) => void;
+  setAutomaticSearchRadius: (radiusM: number | null) => void;
   selectAutomaticParcel: (id: string | null) => void;
   relaunchAnalysis: (id: string) => void;
   setUserRole: (id: string, role: Role) => void;
@@ -115,6 +293,10 @@ interface State {
 
 let toastSeq = 1;
 let flySeq = 1;
+/** Un seul lot « Analyser les cultures » à la fois : le backend traite les parcelles en série. */
+let cultureAnalysisRunning = false;
+/** Une seule scission enregistrée à la fois (évite deux écritures sur un double clic). */
+let splitSaveRunning = false;
 const rint = (a: number, b: number) => Math.floor(a + Math.random() * (b - a + 1));
 
 export const useApp = create<State>()(
@@ -123,27 +305,86 @@ export const useApp = create<State>()(
       ready: false,
       loadError: null,
       parcels: [], regions: [], communes: [], analyses: [], users: [], audit: [],
+      captureHistory: [],
       user: null,
       colors: { ...DEFAULT_COLORS },
       colorsByUser: {},
       threshold: 0.55,
       basemap: 'satellite',
+      readability: false,
       showCoverage: true,
       filters: DEFAULT_FILTERS,
       selectedId: null,
       fly: null,
       filtersOpen: false,
       setFiltersOpen: (v) => set({ filtersOpen: v }),
+      mapCenter: DEFAULT_MAP_CENTER,
+      mapZoom: DEFAULT_MAP_ZOOM,
+      mapBounds: null,
+      mapSize: null,
+      setMapView: (center, zoom, bounds, size) => set({
+        mapCenter: center,
+        mapZoom: zoom,
+        ...(bounds !== undefined ? { mapBounds: bounds } : {}),
+        ...(size !== undefined ? { mapSize: size } : {}),
+      }),
+      geminiCapture: null,
+      setGeminiCapture: (capture) => set({ geminiCapture: capture }),
+      bornes: [],
+      bornePlacement: false,
+      borneDraft: null,
+      searchedLocation: null,
+      startBornePlacement: () => {
+        const s = get();
+        if (s.drawing) {
+          s.toast('Terminez le tracé en cours avant de placer une borne GPS.', 'warn');
+          return;
+        }
+        set({ bornePlacement: true, borneDraft: null, selectedId: null, searchedLocation: null });
+        s.toast('Cliquez sur la carte pour placer la borne GPS.', 'info');
+      },
+      cancelBornePlacement: () => set({ bornePlacement: false }),
+      placeBorneDraft: (point) => set({ bornePlacement: false, borneDraft: point }),
+      cancelBorneDraft: () => set({ borneDraft: null }),
+      saveBorne: async (name) => {
+        const draft = get().borneDraft;
+        if (!draft) throw new Error('Aucun emplacement sélectionné pour la borne GPS.');
+        const created = await api.createBorneGps({
+          name: name.trim(),
+          lat: draft[0],
+          lng: draft[1],
+        });
+        set((s) => ({
+          bornes: [...s.bornes, created],
+          borneDraft: null,
+          searchedLocation: {
+            kind: 'borne',
+            lat: created.lat,
+            lng: created.lng,
+            label: created.name,
+            borneId: created.id,
+          },
+        }));
+        get().toast(`Borne GPS « ${created.name} » enregistrée.`, 'ok');
+        return created;
+      },
+      setSearchedLocation: (location) => set({ searchedLocation: location }),
       drawing: false, drawMode: 'zone', draft: [], zone: null, manualParcelDraft: null,
       analyzingParcelId: null,
+      cultureAnalysisJob: null,
       toasts: [],
       traceInfo: null,
       rejectedParcels: [],
       automaticDetection: null,
       automaticSearchCenter: null,
+      automaticSearchRadius: null,
       selectedAutomaticParcelId: null,
+      automaticSearches: [],
       editingParcelId: null,
       editingCoords: null,
+      splitParcelId: null,
+      splitDraft: [],
+      splitSaving: false,
 
       init: async () => {
         if (get().ready) return;
@@ -179,16 +420,29 @@ export const useApp = create<State>()(
         } catch (err) {
           console.warn('[AgriSat] Échec du chargement de l\'audit :', err);
         }
+        // Bornes GPS : petit volume, chargé en une fois puis filtré côté client
+        // dans le champ de recherche. En cas d'échec, on conserve celles déjà
+        // affichées plutôt que de vider la carte.
+        let bornes = get().bornes;
+        try {
+          bornes = await api.listBornesGps();
+        } catch (err) {
+          console.warn('[AgriSat] Échec du chargement des bornes GPS :', err);
+        }
         // Les suppressions locales (écrites avant le rechargement) et celles relues
         // en base sont fusionnées : aucune ne doit être perdue si l'appel réseau a échoué.
         const rejectedParcels = mergeRejections(get().rejectedParcels, db.rejectedParcels);
         set({
           // Filet de sécurité si la suppression serveur avait échoué : un contour
-          // automatique retiré ne réapparaît pas. Les parcelles manuelles sont
-          // conservées telles quelles (l'utilisateur peut redessiner au même endroit).
-          parcels: db.parcels.filter((p) => isManualParcel(p) || isImportedKmlParcel(p) || !isRejectedParcel(p, rejectedParcels)),
-          regions: db.regions, communes: db.communes, analyses: db.analyses,
+          // automatique retiré ne réapparaît pas. Les délimitations explicites
+          // (tracé manuel, import KML, détection Gemini) sont conservées telles quelles.
+          parcels: db.parcels.filter((p) => isExplicitParcel(p) || !isRejectedParcel(p, rejectedParcels)),
+          regions: db.regions, communes: db.communes,
+          // L'historique des captures est local : sans cette fusion, le rechargement
+          // (qui remplace les analyses par celles de la base) l'effacerait.
+          analyses: mergeCaptureHistory(db.analyses, get().captureHistory),
           users: db.users, audit,
+          bornes,
           rejectedParcels,
           ready: true,
         });
@@ -232,13 +486,18 @@ export const useApp = create<State>()(
         })),
       setThreshold: (v) => set({ threshold: v }),
       setBasemap: (b) => set({ basemap: b }),
+      setReadability: (v) => set({ readability: v }),
       setShowCoverage: (v) => set({ showCoverage: v }),
-      // Changer de sélection (ou fermer la fiche) met fin à une édition en cours.
+      // Changer de sélection (ou fermer la fiche) met fin à une édition ou à une
+      // scission en cours.
       select: (id) =>
         set((s) => ({
           selectedId: id,
           ...(s.editingParcelId && s.editingParcelId !== id
             ? { editingParcelId: null, editingCoords: null }
+            : {}),
+          ...(s.splitParcelId && s.splitParcelId !== id
+            ? { splitParcelId: null, splitDraft: [], splitSaving: false }
             : {}),
         })),
       flyTo: (t) => set({ fly: { ...t, nonce: flySeq++ } }),
@@ -255,6 +514,9 @@ export const useApp = create<State>()(
           selectedId: id,
           editingParcelId: id,
           editingCoords: parcel.coords.map(([lat, lng]) => [lat, lng] as LatLng),
+          splitParcelId: null,
+          splitDraft: [],
+          splitSaving: false,
         });
       },
       setEditingCoords: (coords) => set({ editingCoords: coords }),
@@ -291,8 +553,205 @@ export const useApp = create<State>()(
         );
       },
 
-      startDraw: () => set({ drawing: true, drawMode: 'zone', draft: [], manualParcelDraft: null, selectedId: null }),
-      startParcelDraw: () => set({ drawing: true, drawMode: 'parcel', draft: [], manualParcelDraft: null, selectedId: null }),
+      startSplitParcel: (id) => {
+        const s = get();
+        const parcel = s.parcels.find((p) => p.id === id);
+        if (!parcel) return;
+        if (!s.user || !ROLES[s.user.role].can.correct) {
+          s.toast('Votre profil ne permet pas de scinder une parcelle.', 'warn');
+          return;
+        }
+        set({
+          splitParcelId: id,
+          splitDraft: [],
+          splitSaving: false,
+          selectedId: id,
+          editingParcelId: null,
+          editingCoords: null,
+          drawing: false,
+          draft: [],
+          bornePlacement: false,
+          borneDraft: null,
+        });
+        s.toast('Posez le départ sur le contour, ajoutez des points pour suivre la limite, puis terminez sur le bord opposé.', 'info');
+      },
+      addSplitPoint: (point) => {
+        const s = get();
+        if (!s.splitParcelId) return;
+        const parcel = s.parcels.find((p) => p.id === s.splitParcelId);
+        if (!parcel) return;
+        // Le premier point est une extrémité de coupe : il doit tomber sur le
+        // contour. La tolérance suit le zoom (≈ 14 px) pour rester utilisable à
+        // toute échelle — un clic au milieu de la parcelle n'est jamais accroché.
+        // Les points suivants sont libres : ils suivent la limite réelle.
+        if (s.splitDraft.length === 0) {
+          const metersPerPx = (156_543.03392 * Math.cos((point[0] * Math.PI) / 180)) / 2 ** s.mapZoom;
+          const snapped = snapToRing(point, parcel.coords, Math.max(1.5, Math.min(30, 14 * metersPerPx)));
+          if (!snapped) {
+            s.toast('Posez le premier point sur le contour de la parcelle.', 'warn');
+            return;
+          }
+          set({ splitDraft: [snapped.point] });
+          return;
+        }
+        set({ splitDraft: [...s.splitDraft, point] });
+      },
+      moveSplitPoint: (index, point) => set((s) => {
+        if (!s.splitParcelId || index < 0 || index >= s.splitDraft.length) return {};
+        const splitDraft = s.splitDraft.slice();
+        splitDraft[index] = point;
+        return { splitDraft };
+      }),
+      undoSplitPoint: () => set((s) => ({ splitDraft: s.splitDraft.slice(0, -1) })),
+      clearSplitDraft: () => set({ splitDraft: [] }),
+      cancelSplitParcel: () => {
+        set({ splitParcelId: null, splitDraft: [], splitSaving: false });
+        get().toast('Scission annulée — contour inchangé.', 'info');
+      },
+      saveSplitParcel: async () => {
+        if (splitSaveRunning) return false;
+        const s = get();
+        const id = s.splitParcelId;
+        if (!id) return false;
+        const parcel = s.parcels.find((p) => p.id === id);
+        if (!parcel) {
+          set({ splitParcelId: null, splitDraft: [], splitSaving: false });
+          return false;
+        }
+        const split = splitParcelByCut(parcel.coords, s.splitDraft);
+        if (!split.ok) {
+          s.toast(split.error, 'warn');
+          return false;
+        }
+        splitSaveRunning = true;
+        set({ splitSaving: true });
+        const [first, second] = split.parts;
+        const keeperIsFirst = keeperPartIndex(parcel.centroid, first, second) === 0;
+        const keeperCoords = keeperIsFirst ? first : second;
+        const otherCoords = keeperIsFirst ? second : first;
+        const keeperCentroid = centroidOf(keeperCoords);
+        const keeperArea = ringAreaHa(keeperCoords);
+        const otherCentroid = centroidOf(otherCoords);
+        const otherArea = ringAreaHa(otherCoords);
+        const seasons = [...new Set([...Object.keys(parcel.results), s.filters.seasonId])];
+        const today = new Date().toLocaleDateString('fr-FR');
+
+        // La partie détachée est un contour seul, comme une parcelle tracée à la
+        // main : sa culture reste à déterminer par une analyse.
+        let newPart: Parcel;
+        try {
+          const row = await api.createParcel(parcelCreatePayload(parcel, otherCoords, otherCentroid, otherArea, {
+            label: `Scission du ${today}`,
+            dataSource: SPLIT_PARCEL_SOURCE,
+            verdict: 'Contour issu d’une scission manuelle — culture à analyser',
+            details: 'Partie détachée manuellement d’une parcelle fusionnée par l’IA.',
+            notes: `Partie d’une parcelle scindée manuellement (${parcel.id}).`,
+            saison: s.filters.seasonId,
+            keepCulture: false,
+          }));
+          const [mapped] = maltoToFrontend([row as unknown as MaltoParcel], { regions: s.regions, communes: s.communes });
+          if (!mapped) throw new Error('géométrie de la nouvelle partie invalide');
+          newPart = {
+            ...mapped,
+            results: Object.fromEntries(seasons.map((seasonId) => [seasonId, clearedCultureResult(seasonId)])),
+          };
+        } catch (error) {
+          console.warn('[AgriSat] Création de la partie scindée impossible :', error);
+          splitSaveRunning = false;
+          set({ splitSaving: false });
+          s.toast('Scission impossible : la parcelle est inchangée.', 'danger');
+          return false;
+        }
+
+        // Persistance de la partie qui garde l'identité de la parcelle d'origine.
+        // Un contour qui n'était pas en base (tracé IA) est enregistré, et son
+        // ancienne empreinte marquée supprimée : sans cela il serait retracé au
+        // rechargement et la scission disparaîtrait.
+        let keeperId = parcel.id;
+        const createdIds = [newPart.id];
+        try {
+          if (isDatabaseParcelId(parcel.id)) {
+            await api.updateParcelGeometry(parcel.id, {
+              coordinates: keeperCoords.map(([lat, lng]) => ({ lat, lng })),
+              center_lat: keeperCentroid[0],
+              center_lng: keeperCentroid[1],
+              surface_ha: keeperArea,
+            });
+          } else {
+            const keeperRow = await api.createParcel(parcelCreatePayload(parcel, keeperCoords, keeperCentroid, keeperArea, {
+              label: `Scission du ${today}`,
+              dataSource: parcel.dataSource ?? SPLIT_PARCEL_SOURCE,
+              verdict: 'Contour issu d’une scission manuelle',
+              details: 'Partie conservée d’une parcelle scindée manuellement.',
+              notes: `Partie d’une parcelle scindée manuellement (${parcel.id}).`,
+              saison: s.filters.seasonId,
+              keepCulture: true,
+            }));
+            keeperId = String((keeperRow as { id?: unknown }).id ?? '');
+            if (!keeperId) throw new Error('identifiant de la partie conservée absent');
+            createdIds.push(keeperId);
+            const markerRow = await api.createParcel(parcelCreatePayload(parcel, parcel.coords, parcel.centroid, parcel.areaHa, {
+              label: '',
+              dataSource: REJECTED_PARCEL_SOURCE,
+              verdict: 'Contour automatique supprimé',
+              details: 'Ancien contour fusionné remplacé par une scission manuelle.',
+              notes: 'Contour automatique supprimé par l’utilisateur.',
+              saison: null,
+              keepCulture: false,
+            }));
+            createdIds.push(String((markerRow as { id?: unknown }).id ?? ''));
+          }
+        } catch (error) {
+          console.warn('[AgriSat] Enregistrement de la scission impossible :', error);
+          // Rien ne doit rester à moitié écrit : les parties déjà créées sont retirées.
+          for (const createdId of createdIds.filter((value) => isDatabaseParcelId(value))) {
+            try {
+              await api.deleteParcel(createdId);
+            } catch (cleanupError) {
+              console.warn('[AgriSat] Nettoyage de la scission impossible :', cleanupError);
+            }
+          }
+          splitSaveRunning = false;
+          set({ splitSaving: false });
+          s.toast('Scission impossible : la parcelle est inchangée.', 'danger');
+          return false;
+        }
+
+        const keeper: Parcel = {
+          ...parcel,
+          id: keeperId,
+          coords: keeperCoords,
+          centroid: keeperCentroid,
+          areaHa: keeperArea,
+        };
+        set((st) => ({
+          parcels: [...st.parcels.map((p) => (p.id === parcel.id ? keeper : p)), newPart],
+          splitParcelId: null,
+          splitDraft: [],
+          splitSaving: false,
+          selectedId: keeper.id,
+          ...(isDatabaseParcelId(parcel.id)
+            ? {}
+            : { rejectedParcels: addRejection(st.rejectedParcels, parcel) }),
+        }));
+        get().logAudit('Scission de parcelle', `${parcel.id} · ${keeperArea.toFixed(2)} + ${otherArea.toFixed(2)} ha`);
+        get().toast(
+          `Parcelle scindée : ${keeperArea.toFixed(2)} ha (culture conservée) et `
+          + `${otherArea.toFixed(2)} ha (à analyser).`,
+          'ok',
+        );
+        splitSaveRunning = false;
+        return true;
+      },
+
+      startDraw: () => set({
+        drawing: true, drawMode: 'zone', draft: [], manualParcelDraft: null, selectedId: null,
+        splitParcelId: null, splitDraft: [], splitSaving: false,
+      }),
+      startParcelDraw: () => set({
+        drawing: true, drawMode: 'parcel', draft: [], manualParcelDraft: null, selectedId: null,
+        splitParcelId: null, splitDraft: [], splitSaving: false,
+      }),
       addDraftPoint: (p) => set((s) => ({ draft: [...s.draft, p] })),
       undoDraft: () => set((s) => ({ draft: s.draft.slice(0, -1) })),
       finishDraw: () => {
@@ -331,9 +790,61 @@ export const useApp = create<State>()(
         set((s) => ({ parcels: [...s.parcels, ...fresh], traceInfo: { ...info, added: fresh.length } }));
         return fresh.length;
       },
+      addDetectedParcels: (added) => {
+        // Le backend a déjà écarté les contours présents en base. Ici on ne filtre
+        // que les identifiants déjà affichés (double capture de la même zone).
+        const known = new Set(get().parcels.map((parcel) => parcel.id));
+        const fresh = added.filter((parcel) => !known.has(parcel.id));
+        if (fresh.length) set((s) => ({ parcels: [...s.parcels, ...fresh] }));
+        return fresh.length;
+      },
       setAutomaticDetection: (result) => set({ automaticDetection: result }),
       setAutomaticSearchCenter: (center) => set({ automaticSearchCenter: center }),
+      setAutomaticSearchRadius: (radiusM) => set({ automaticSearchRadius: radiusM }),
       selectAutomaticParcel: (id) => set({ selectedAutomaticParcelId: id }),
+
+      recordAutomaticSearch: (input) => {
+        const s = get();
+        const entry: AutomaticSearchEntry = {
+          ...input,
+          id: `AR-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          createdAt: new Date().toISOString(),
+          createdBy: s.user?.name ?? '—',
+        };
+        set({ automaticSearches: [entry, ...s.automaticSearches].slice(0, MAX_AUTOMATIC_SEARCH_HISTORY) });
+        s.logAudit('Recherche automatique', `${input.cultures.length} culture(s) consignée(s)`);
+      },
+
+      deleteAutomaticSearchCulture: (searchId, parcelId) => {
+        const s = get();
+        const entry = s.automaticSearches.find((search) => search.id === searchId);
+        const culture = entry?.cultures.find((line) => line.parcelId === parcelId);
+        if (!entry || !culture) {
+          s.toast('Culture introuvable dans cet historique.', 'warn');
+          return;
+        }
+        set({
+          automaticSearches: s.automaticSearches.map((search) => search.id !== searchId
+            ? search
+            : { ...search, cultures: search.cultures.filter((line) => line.parcelId !== parcelId) }),
+        });
+        get().logAudit('Suppression d’une culture (recherche automatique)', `Parcelle ${parcelId}`);
+        get().toast('Culture retirée de l’historique — la parcelle et ses données sont conservées.', 'ok');
+      },
+
+      clearAutomaticSearches: () => {
+        const s = get();
+        if (!s.automaticSearches.length) {
+          s.toast('Aucune recherche automatique à supprimer.', 'info');
+          return;
+        }
+        set({ automaticSearches: [] });
+        get().logAudit(
+          'Suppression de l’historique des recherches automatiques',
+          `${s.automaticSearches.length} recherche(s) supprimée(s)`,
+        );
+        get().toast('Historique des recherches automatiques supprimé — les parcelles et leurs cultures sont conservées.', 'ok');
+      },
 
       toast: (msg, tone = 'info') => {
         const id = toastSeq++;
@@ -357,6 +868,10 @@ export const useApp = create<State>()(
         const s = get();
         const seasonId = s.filters.seasonId;
         const by = s.user?.name ?? 'Inconnu';
+        // Toute la fiche suit la classe retenue : sans ces textes, une parcelle
+        // corrigée en « Orge » continuait d'afficher « Autre culture » (verdict,
+        // classe détectée et explication enregistrés par le modèle).
+        const text = correctionText(to, note, kind);
         set({
           parcels: s.parcels.map((p) => {
             if (p.id !== id) return p;
@@ -364,6 +879,7 @@ export const useApp = create<State>()(
             if (!r) return p;
             return {
               ...p,
+              cultureDetail: withCorrectedClass(p.cultureDetail, text),
               results: {
                 ...p.results,
                 [seasonId]: { ...r, culture: to, status: kind === 'observation' ? 'verifie_terrain' : 'corrige', correctedBy: by },
@@ -372,24 +888,36 @@ export const useApp = create<State>()(
             };
           }),
         });
-        // Persister vers le backend
+        // Persister vers le backend. La fiche affichée est relue depuis ces mêmes
+        // champs : une correction non enregistrée doit être signalée, pas tue.
+        if (!isDatabaseParcelId(id)) {
+          get().toast('Correction gardée pour cette session : la parcelle n’est pas en base de données.', 'warn');
+          get().logAudit(kind === 'observation' ? 'Saisie d’observation terrain' : 'Correction de classe', `Parcelle ${id}`);
+          return;
+        }
         try {
           const r = s.parcels.find((p) => p.id === id)?.results[seasonId];
           await api.correctParcelle(id, {
-            culture_detected: to,
+            // Libellé et non identifiant de culture : la base stocke « Orge »,
+            // « Pomme de terre », etc. (l'identifiant `pomme_de_terre` n'était
+            // relu comme aucune culture connue au rechargement).
+            culture_detected: text.label,
             confidence: r ? Math.round(r.confidence * 100) : undefined,
-            verdict: kind === 'observation' ? 'Observation terrain' : 'Correction humaine',
+            verdict: text.verdict,
+            details: text.details,
             saison: seasonId,
           });
         } catch (err) {
           console.warn('[AgriSat] Échec de la correction de parcelle :', err);
+          get().toast('Correction affichée mais non enregistrée en base de données : relancez la correction.', 'danger');
         }
         get().logAudit(kind === 'observation' ? 'Saisie d’observation terrain' : 'Correction de classe', `Parcelle ${id}`);
       },
-      rejectParcel: async (id) => {
+      rejectParcel: async (id, options) => {
+        const silent = options?.silent === true;
         const s = get();
         const parcel = s.parcels.find((p) => p.id === id);
-        if (!parcel) return;
+        if (!parcel) return false;
 
         // Masquage immédiat + mémorisation de l'empreinte : le contour ne sera
         // pas retracé à l'écran pendant la session en cours.
@@ -398,18 +926,19 @@ export const useApp = create<State>()(
           rejectedParcels: addRejection(s.rejectedParcels, parcel),
           selectedId: null,
         });
-        get().logAudit('Rejet de polygone', `Parcelle ${id}`);
+        if (!silent) get().logAudit('Rejet de polygone', `Parcelle ${id}`);
 
         // Parcelle enregistrée en base : suppression réelle de la ligne.
         if (isDatabaseParcelId(id)) {
           try {
             await api.deleteParcel(id);
-            get().toast('Parcelle supprimée définitivement.', 'ok');
+            if (!silent) get().toast('Parcelle supprimée définitivement.', 'ok');
+            return true;
           } catch (err) {
             console.warn('[AgriSat] Suppression de la parcelle en base impossible :', err);
-            get().toast('Parcelle masquée, mais la suppression en base a échoué.', 'warn');
+            if (!silent) get().toast('Parcelle masquée, mais la suppression en base a échoué.', 'warn');
+            return false;
           }
-          return;
         }
 
         // Contour automatique (tracé VHR, absent de la base) : on enregistre une
@@ -453,66 +982,116 @@ export const useApp = create<State>()(
             cnn_prob_barley: null,
             cnn_prob_non_barley: null,
           });
-          get().toast('Contour supprimé définitivement.', 'ok');
+          if (!silent) get().toast('Contour supprimé définitivement.', 'ok');
+          return true;
         } catch (err) {
           console.warn('[AgriSat] Suppression du contour non enregistrée côté serveur :', err);
-          get().toast('Contour masqué sur cet appareil ; la suppression serveur a échoué.', 'warn');
+          if (!silent) get().toast('Contour masqué sur cet appareil ; la suppression serveur a échoué.', 'warn');
+          return false;
         }
+      },
+
+      /**
+       * Suppression en lot (page « Parcelles »). Chaque parcelle passe par le même
+       * chemin qu'une suppression unitaire ; l'utilisateur n'a qu'un seul retour.
+       */
+      deleteParcels: async (ids) => {
+        const s = get();
+        const wanted = new Set(ids);
+        const targets = s.parcels.filter((p) => wanted.has(p.id) && !p.rejected);
+        if (!targets.length) {
+          s.toast('Aucune parcelle à supprimer.', 'warn');
+          return;
+        }
+        let failures = 0;
+        for (const target of targets) {
+          if (!(await get().rejectParcel(target.id, { silent: true }))) failures += 1;
+        }
+        const removed = targets.length - failures;
+        get().logAudit(
+          'Suppression de parcelles',
+          targets.length === 1 ? `Parcelle ${targets[0].id}` : `${removed} parcelle(s) sur ${targets.length}`,
+        );
+        if (failures) {
+          get().toast(`${removed} parcelle(s) supprimée(s), ${failures} suppression(s) en base en échec.`, 'warn');
+          return;
+        }
+        get().toast(
+          targets.length === 1 ? 'Parcelle supprimée.' : `${removed} parcelles supprimées.`,
+          'ok',
+        );
       },
 
       removeParcelCulture: async (id) => {
         const s = get();
         const parcel = s.parcels.find((p) => p.id === id);
         if (!parcel) return;
-        const hasCulture = !!parcel.cultureDetail
-          || Object.values(parcel.results).some((result) => result.culture !== 'inconnue');
-        if (!hasCulture) {
+        if (!parcelHasCulture(parcel)) {
           s.toast('Aucune culture enregistrée à supprimer sur cette parcelle.', 'warn');
           return;
         }
 
+        // Des lignes doublons peuvent décrire la même parcelle (contour importé +
+        // tracé manuel, réanalyses successives…). Supprimer la culture d'une seule
+        // ligne laissait l'autre culture visible sur la carte : toutes les lignes
+        // qui recouvrent exactement ce champ sont donc vidées ensemble.
+        const related = s.parcels.filter((p) =>
+          p.id === id || (parcelHasCulture(p) && isSameParcelFootprint(p, parcel)),
+        );
+        const originals = new Map(related.map((p) => [p.id, p]));
         // La parcelle et son contour sont conservés : seuls les résultats culturaux
         // repassent en « non classé », comme une parcelle sans culture relue en base.
-        const seasonIds = Object.keys(parcel.results);
-        const cleared: Parcel = {
-          ...parcel,
-          cultureDetail: undefined,
-          results: Object.fromEntries(
-            (seasonIds.length ? seasonIds : [s.filters.seasonId])
-              .map((seasonId) => [seasonId, clearedCultureResult(seasonId)]),
+        set({
+          parcels: s.parcels.map((p) =>
+            originals.has(p.id) ? withoutParcelCulture(p, s.filters.seasonId) : p,
           ),
-        };
-        set({ parcels: s.parcels.map((p) => (p.id === id ? cleared : p)) });
+        });
         get().logAudit('Suppression de la culture', `Parcelle ${id}`);
 
-        if (!isDatabaseParcelId(id)) {
+        const persisted = related.filter((p) => isDatabaseParcelId(p.id));
+        if (!persisted.length) {
           get().toast('Culture retirée. La parcelle reste sur la carte.', 'ok');
           return;
         }
 
-        try {
-          await api.deleteParcelCulture(id);
-          get().toast('Culture supprimée en base — la parcelle est conservée.', 'ok');
-        } catch (err) {
-          console.warn('[AgriSat] Suppression de la culture impossible :', err);
-          // Le serveur fait foi : on remet la parcelle dans son état précédent.
-          set((st) => ({ parcels: st.parcels.map((p) => (p.id === id ? parcel : p)) }));
+        const failures = new Set<string>();
+        await Promise.all(persisted.map(async (p) => {
+          try {
+            await api.deleteParcelCulture(p.id);
+          } catch (err) {
+            failures.add(p.id);
+            console.warn(`[AgriSat] Suppression de la culture impossible pour ${p.id} :`, err);
+          }
+        }));
+
+        if (failures.size) {
+          // Le serveur fait foi : seules les lignes non enregistrées sont restaurées.
+          set((st) => ({
+            parcels: st.parcels.map((p) => failures.has(p.id) ? originals.get(p.id) ?? p : p),
+          }));
           get().toast('Suppression de la culture impossible : la parcelle est inchangée.', 'danger');
+          return;
         }
+        get().toast('Culture supprimée en base — la parcelle est conservée.', 'ok');
       },
 
       analyzeParcel: async (id, options) => {
         const s = get();
         const parcel = s.parcels.find((p) => p.id === id);
         if (!parcel) {
-          s.toast('Parcelle introuvable.', 'warn');
-          return;
+          if (!options?.silent) s.toast('Parcelle introuvable.', 'warn');
+          return false;
         }
-        if (s.analyzingParcelId) {
+        const background = options?.background === true;
+        const silent = options?.silent === true || background;
+        const seasonId = options?.seasonId ?? s.filters.seasonId;
+        // Une analyse de fiche bloque les autres analyses unitaires, mais pas le
+        // lot d'arrière-plan : celui-ci doit pouvoir continuer pendant la navigation.
+        if (!background && s.analyzingParcelId) {
           s.toast('Une analyse de parcelle est déjà en cours.', 'warn');
-          return;
+          return false;
         }
-        set({ analyzingParcelId: id });
+        if (!background) set({ analyzingParcelId: id });
         try {
           // Seule la parcelle sélectionnée est transmise : les parcelles
           // environnantes ne sont ni analysées ni modifiées.
@@ -523,40 +1102,134 @@ export const useApp = create<State>()(
             polygon: parcel.coords.map(([lat, lng]) => ({ lat, lng })),
             parcelId: isDatabaseParcelId(parcel.id) ? parcel.id : null,
             force: options?.force ?? false,
-          });
+          }, options?.signal);
 
           const [updated] = maltoToFrontend([result.parcelle], { regions: s.regions, communes: s.communes });
-          if (updated) {
-            // La ligne enregistrée remplace le contour affiché (identifiant de base
-            // pour une parcelle déjà en base, nouveau UUID sinon) ; les corrections
-            // terrain saisies par l'utilisateur sont conservées.
-            const newResult = Object.values(updated.results)[0];
-            const merged: Parcel = {
-              ...updated,
-              corrections: parcel.corrections,
-              results: {
-                ...parcel.results,
-                ...(newResult ? { [s.filters.seasonId]: { ...newResult, seasonId: s.filters.seasonId } } : {}),
-              },
-            };
-            set((st) => ({
-              parcels: [...st.parcels.filter((p) => p.id !== parcel.id), merged],
-              selectedId: merged.id,
-            }));
+          if (!updated) return false;
+          // Relire la parcelle avant fusion : une correction ou une autre analyse
+          // a pu être enregistrée pendant l'appel réseau.
+          const current = get().parcels.find((p) => p.id === parcel.id) ?? parcel;
+          // La ligne enregistrée remplace le contour affiché (identifiant de base
+          // pour une parcelle déjà en base, nouveau UUID sinon) ; les corrections
+          // terrain saisies par l'utilisateur sont conservées.
+          const newResult = updated.results[seasonId] ?? Object.values(updated.results)[0];
+          const merged: Parcel = {
+            ...updated,
+            corrections: current.corrections,
+            results: {
+              ...current.results,
+              ...(newResult ? { [seasonId]: { ...newResult, seasonId } } : {}),
+            },
+          };
+          set((st) => ({
+            parcels: st.parcels.map((p) => (p.id === parcel.id ? merged : p)),
+            ...(!background ? { selectedId: merged.id } : {}),
+          }));
+          if (!silent) {
             get().logAudit('Analyse de parcelle', `Parcelle ${merged.id}`);
+            get().toast(
+              result.created
+                ? 'Parcelle analysée et enregistrée en base.'
+                : 'Analyse terminée — les données de la parcelle sont à jour.',
+              'ok',
+            );
           }
-          get().toast(
-            result.created
-              ? 'Parcelle analysée et enregistrée en base.'
-              : 'Analyse terminée — les données de la parcelle sont à jour.',
-            'ok',
-          );
+          return true;
         } catch (err) {
+          if (options?.signal?.aborted) {
+            console.info('[AgriSat] Analyse de parcelle annulée par l’utilisateur.');
+            return false;
+          }
           console.warn('[AgriSat] Analyse de parcelle impossible :', err);
-          get().toast(err instanceof Error ? err.message : 'Analyse de parcelle impossible.', 'danger');
+          if (!silent) get().toast(err instanceof Error ? err.message : 'Analyse de parcelle impossible.', 'danger');
+          return false;
         } finally {
-          set({ analyzingParcelId: null });
+          if (!background) set({ analyzingParcelId: null });
         }
+      },
+
+      analyzeAnalysisCultures: (id) => {
+        const s = get();
+        if (cultureAnalysisRunning) {
+          s.toast('Une analyse des cultures est déjà en cours. Elle continue en arrière-plan.', 'info');
+          return;
+        }
+        const entry = s.analyses.find((analysis) => analysis.id === id)
+          ?? s.captureHistory.find((analysis) => analysis.id === id);
+        if (!entry) {
+          s.toast('Analyse introuvable.', 'warn');
+          return;
+        }
+        if (!entry.detected?.length) {
+          s.toast('Aucune parcelle à analyser pour cette analyse.', 'warn');
+          return;
+        }
+        // Instantané des seules parcelles sans résultat ; l'état est revérifié
+        // avant chaque appel pour ne jamais réanalyser une parcelle terminée.
+        const targets = pendingCultureParcelsForAnalysis(entry, s.parcels);
+        if (!targets.length) {
+          const counts = cultureCountsForAnalysis(entry, s.parcels);
+          s.toast(
+            counts.total && counts.pending === 0
+              ? 'Toutes les parcelles de cette analyse ont déjà un résultat cultural.'
+              : counts.total
+                ? 'Les parcelles restantes sont introuvables ou supprimées : impossible de reprendre cette analyse.'
+                : 'Aucune parcelle à analyser pour cette analyse.',
+            counts.total && counts.pending === 0 ? 'info' : 'warn',
+          );
+          return;
+        }
+
+        cultureAnalysisRunning = true;
+        set({ cultureAnalysisJob: { analysisId: id, done: 0, total: targets.length } });
+        // Volontairement détaché du composant : changer de page n'interrompt pas
+        // le traitement et chaque résultat est enregistré au fur et à mesure.
+        void (async () => {
+          let done = 0;
+          let failures = 0;
+          let cancelled = false;
+          try {
+            for (const target of targets) {
+              const stillExists = get().analyses.some((analysis) => analysis.id === id)
+                || get().captureHistory.some((analysis) => analysis.id === id);
+              if (!stillExists) {
+                cancelled = true;
+                break;
+              }
+              const current = get().parcels.find((parcel) => parcel.id === target.id);
+              if (current && !current.rejected && !isAnalyzedParcel(current)) {
+                const analyzed = await get().analyzeParcel(target.id, {
+                  background: true,
+                  silent: true,
+                  seasonId: entry.seasonId,
+                });
+                const updated = get().parcels.find((parcel) => parcel.id === target.id);
+                if (!analyzed || !updated || !isAnalyzedParcel(updated)) failures += 1;
+              }
+              done += 1;
+              set({ cultureAnalysisJob: { analysisId: id, done, total: targets.length } });
+            }
+          } catch (error) {
+            console.warn('[AgriSat] Analyse des cultures interrompue :', error);
+            failures = Math.max(1, failures);
+          } finally {
+            cultureAnalysisRunning = false;
+            set({ cultureAnalysisJob: null });
+          }
+
+          if (!cancelled) {
+            const analyzedCount = Math.max(0, done - failures);
+            if (failures) {
+              get().toast(
+                `${analyzedCount} parcelle(s) analysée(s), ${failures} en échec — relancez l’analyse pour reprendre les parcelles restantes.`,
+                'warn',
+              );
+            } else {
+              get().toast('Analyse des cultures terminée', 'ok');
+            }
+            get().logAudit('Analyse des cultures', `${id} · ${analyzedCount}/${targets.length} parcelle(s)`);
+          }
+        })();
       },
 
       createAnalysis: ({ zoneLabel, regionId, communeId, seasonId, zone }) => {
@@ -648,6 +1321,124 @@ export const useApp = create<State>()(
         return base;
       },
 
+      recordCaptureAnalysis: async ({
+        center, bounds, spanM, zoom, imageDataUrl, parcels, duplicates = 0, warnings = [], error,
+      }) => {
+        const s = get();
+        const now = new Date().toISOString();
+        // Aperçu réduit : la capture complète dépasserait le quota de stockage local.
+        const thumbnail = imageDataUrl ? await captureThumbnail(imageDataUrl) : null;
+        // Numérotation lisible, sans réutilisation d'un identifiant déjà pris
+        // (l'historique est troniqué, donc sa longueur ne suffit pas).
+        const day = now.slice(0, 10).replace(/-/g, '');
+        let index = s.captureHistory.length + 1;
+        let id = `CAP-${day}-${String(index).padStart(3, '0')}`;
+        while (s.captureHistory.some((a) => a.id === id) || s.analyses.some((a) => a.id === id)) {
+          index += 1;
+          id = `CAP-${day}-${String(index).padStart(3, '0')}`;
+        }
+        const entry: Analysis = {
+          id,
+          zoneLabel: `Capture ${Math.round(spanM)} m · ${center[0].toFixed(5)}, ${center[1].toFixed(5)}`,
+          seasonId: s.filters.seasonId,
+          status: error ? 'echec' : parcels.length ? 'terminee' : 'terminee_avertissements',
+          progress: 100,
+          createdBy: s.user?.name ?? '—',
+          createdAt: now, startedAt: now, finishedAt: now,
+          pipelineVersion: 'Détection automatique · capture satellite',
+          scenes: 0,
+          parcelCount: parcels.length,
+          areaHa: parcels.reduce((total, parcel) => total + parcel.areaHa, 0),
+          warnings: error
+            ? []
+            : [...warnings, ...(parcels.length || duplicates
+              ? []
+              : ['Aucune parcelle entièrement visible détectée sur cette capture.'])],
+          logs: [{
+            at: now,
+            level: error ? 'error' : parcels.length ? 'info' : 'warn',
+            msg: error
+              ? `Capture interrompue : ${error}`
+              : `Capture de ${Math.round(spanM)} m (zoom ${zoom}) — ${parcels.length} parcelle(s) détectée(s)`
+                + (duplicates ? `, ${duplicates} déjà en base.` : '.'),
+          }],
+          error,
+          zone: { center, bounds, spanM, zoom },
+          captureDataUrl: thumbnail ?? undefined,
+          detected: parcels,
+        };
+        set((st) => ({
+          analyses: [entry, ...st.analyses.filter((a) => a.id !== entry.id)],
+          captureHistory: [entry, ...st.captureHistory].slice(0, MAX_CAPTURE_HISTORY),
+        }));
+        if (!error) get().logAudit('Analyse de zone', entry.zoneLabel);
+      },
+
+      deleteAnalysisHistory: async (id) => {
+        const s = get();
+        const entry = s.analyses.find((a) => a.id === id) ?? s.captureHistory.find((a) => a.id === id);
+        if (!entry) return false;
+
+        // Parcelles que cette analyse a créées : ce sont les seules lignes de la
+        // base qui peuvent disparaître avec elle.
+        const candidateIds = parcelIdsOfAnalysis([...s.analyses, ...s.captureHistory], id)
+          .filter((parcelId) => isDatabaseParcelId(parcelId));
+
+        // Suppression par petits lots : une capture peut produire des dizaines de
+        // parcelles et le pool de connexions du backend est limité.
+        const results: PromiseSettledResult<void>[] = [];
+        for (let i = 0; i < candidateIds.length; i += 6) {
+          results.push(...await Promise.allSettled(
+            candidateIds.slice(i, i + 6).map((parcelId) => api.deleteParcel(parcelId)),
+          ));
+        }
+        // Un 404 ne signale pas une panne : la ligne n'existe déjà plus (parcelle
+        // supprimée entre-temps, autre navigateur), la parcelle est donc bien partie.
+        const stillStored = (result: PromiseSettledResult<void>) => result.status === 'rejected'
+          && !/Malto 404/.test(String((result.reason as Error)?.message ?? result.reason));
+        for (const result of results) {
+          if (result.status === 'rejected' && stillStored(result)) {
+            console.warn('[AgriSat] Suppression d’une parcelle de l’analyse impossible :', result.reason);
+          }
+        }
+        const failed = results.filter(stillStored).length;
+
+        // Les parcelles déjà retirées le sont quand même : un nouvel essai ne
+        // tentera que les suppressions en échec, sans toucher aux autres analyses.
+        const removedIds = new Set(candidateIds.filter((_, i) => !stillStored(results[i])));
+        if (removedIds.size) {
+          set((st) => ({
+            parcels: st.parcels.filter((p) => !removedIds.has(p.id)),
+            selectedId: st.selectedId && removedIds.has(st.selectedId) ? null : st.selectedId,
+            ...(st.editingParcelId && removedIds.has(st.editingParcelId)
+              ? { editingParcelId: null, editingCoords: null }
+              : {}),
+          }));
+        }
+
+        if (failed) {
+          get().toast(
+            `Analyse conservée : ${failed} parcelle(s) sur ${candidateIds.length} n’ont pas pu être supprimées de la base.`,
+            'danger',
+          );
+          return false;
+        }
+
+        const parcelCount = candidateIds.length;
+        set((st) => ({
+          analyses: st.analyses.filter((a) => a.id !== id),
+          captureHistory: st.captureHistory.filter((a) => a.id !== id),
+        }));
+        get().toast(
+          parcelCount
+            ? `Analyse ${id} supprimée · ${parcelCount} parcelle(s) supprimée(s).`
+            : `Analyse ${id} supprimée.`,
+          'ok',
+        );
+        get().logAudit('Suppression d’analyse', `${id}${parcelCount ? ` · ${parcelCount} parcelle(s)` : ''}`);
+        return true;
+      },
+
       relaunchAnalysis: (id) => {
         const s = get();
         const a = s.analyses.find((x) => x.id === id);
@@ -673,19 +1464,58 @@ export const useApp = create<State>()(
     }),
     {
       name: 'agri-mada-v1',
-      version: 3,
+      version: 5,
       migrate: (persistedState) => ({
-        ...(persistedState as Pick<State, 'user' | 'colors' | 'colorsByUser' | 'threshold' | 'showCoverage'>),
+        ...(persistedState as Pick<State, 'user' | 'colors' | 'colorsByUser' | 'threshold' | 'readability' | 'showCoverage'>),
         rejectedParcels: (persistedState as Partial<State>).rejectedParcels ?? [],
+        captureHistory: (persistedState as Partial<State>).captureHistory ?? [],
+        automaticSearches: (persistedState as Partial<State>).automaticSearches ?? [],
         basemap: 'satellite' as const,
       }),
       partialize: (s) => ({
         user: s.user, colors: s.colors, colorsByUser: s.colorsByUser, threshold: s.threshold,
-        basemap: s.basemap, showCoverage: s.showCoverage, rejectedParcels: s.rejectedParcels,
+        basemap: s.basemap, readability: s.readability, showCoverage: s.showCoverage,
+        rejectedParcels: s.rejectedParcels, captureHistory: s.captureHistory,
+        automaticSearches: s.automaticSearches,
       }),
     },
   ),
 );
+
+/**
+ * Analyses de la base + historique local des captures, sans doublon.
+ *
+ * `reload` remplace les analyses par celles du serveur ; comme l'historique des
+ * captures n'existe que dans le navigateur, il est réinjecté ici pour rester
+ * visible après un rechargement de la page.
+ */
+function mergeCaptureHistory(fromDb: Analysis[], history: Analysis[]): Analysis[] {
+  const known = new Set(fromDb.map((a) => a.id));
+  return [...history.filter((a) => !known.has(a.id)), ...fromDb]
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+
+/** Vrai si la parcelle porte encore une culture (en base ou pour une saison). */
+function parcelHasCulture(parcel: Parcel): boolean {
+  return !!parcel.cultureDetail
+    || Object.values(parcel.results).some((result) => result.culture !== 'inconnue');
+}
+
+/**
+ * Copie d'une parcelle dont toute la culture est effacée (fiche et résultats),
+ * le contour, l'identité et la superficie restant intacts.
+ */
+function withoutParcelCulture(parcel: Parcel, fallbackSeasonId: string): Parcel {
+  const seasonIds = Object.keys(parcel.results);
+  return {
+    ...parcel,
+    cultureDetail: undefined,
+    results: Object.fromEntries(
+      (seasonIds.length ? seasonIds : [fallbackSeasonId])
+        .map((seasonId) => [seasonId, clearedCultureResult(seasonId)]),
+    ),
+  };
+}
 
 /**
  * Résultat « non classé » d'une parcelle dont la culture vient d'être supprimée.
@@ -705,6 +1535,88 @@ function clearedCultureResult(seasonId: string): CropResult {
     processedAt: at,
     observedFrom: at.slice(0, 10),
     observedTo: at.slice(0, 10),
+  };
+}
+
+/**
+ * Partie qui reprend l'identité (et la culture) de la parcelle d'origine :
+ * celle qui contient son centre. Pour un contour concave dont le centre tombe
+ * hors des deux parties, la plus grande part fait foi.
+ */
+function keeperPartIndex(centroid: LatLng, first: LatLng[], second: LatLng[]): 0 | 1 {
+  const inFirst = pointInPolygon(centroid, first);
+  const inSecond = pointInPolygon(centroid, second);
+  if (inFirst !== inSecond) return inFirst ? 0 : 1;
+  return ringAreaHa(first) >= ringAreaHa(second) ? 0 : 1;
+}
+
+/**
+ * Payload POST /api/parcelles d'un contour issu d'une scission.
+ *
+ * La nouvelle partie est un contour seul (culture à déterminer par une analyse).
+ * Quand la parcelle scindée n'existait qu'à l'écran (tracé IA non enregistré),
+ * la partie conservée reprend en plus la culture de la parcelle d'origine pour
+ * que son enregistrement ne perde pas les données déjà analysées.
+ */
+function parcelCreatePayload(
+  parcel: Parcel,
+  coords: LatLng[],
+  centroid: LatLng,
+  areaHa: number,
+  options: {
+    label: string;
+    dataSource: string;
+    verdict: string;
+    details: string;
+    notes: string;
+    /** Saison dans laquelle la partie est enregistrée (affichage après rechargement). */
+    saison: string | null;
+    keepCulture: boolean;
+  },
+): CreateMaltoParcelPayload {
+  const detail = options.keepCulture ? parcel.cultureDetail : undefined;
+  const result = options.keepCulture
+    ? parcel.results[DEFAULT_SEASON] ?? Object.values(parcel.results)[0]
+    : undefined;
+  // Culture de repli quand seule la fiche locale existe (tracé IA analysé à
+  // l'écran, pas encore relu depuis une ligne en base).
+  const fallbackCulture = result && result.culture !== 'inconnue' ? CULTURE_BY_ID[result.culture].label : null;
+  return {
+    label: options.label,
+    coordinates: coords.map(([lat, lng]) => ({ lat, lng })),
+    center_lat: centroid[0],
+    center_lng: centroid[1],
+    surface_ha: areaHa,
+    culture_declared: detail?.declared ?? fallbackCulture ?? 'Inconnue',
+    culture_detected: detail?.detected ?? fallbackCulture,
+    ndvi_percentage: detail?.ndvi ?? null,
+    ndre: detail?.ndre ?? null,
+    spectral_bands: detail?.spectralBands ?? null,
+    confidence: detail?.confidence ?? (result ? Math.round(result.confidence * 100) : null),
+    verdict: detail?.verdict ?? options.verdict,
+    details: detail?.details ?? options.details,
+    saison: detail?.seasonLabel ?? result?.seasonId ?? options.saison,
+    soil_type: detail?.soilType ?? null,
+    risk_factors: detail?.riskFactors ?? [],
+    recommendations: detail?.recommendations ?? null,
+    data_source: options.dataSource,
+    owner_name: detail?.ownerName ?? '',
+    notes: detail?.notes ?? options.notes,
+    time_series_s2: detail?.timeSeries ?? [],
+    time_series_s1: [],
+    time_series_rain: [],
+    estimated_planting_date: detail?.plantingDate ?? null,
+    estimated_harvest_date: detail?.harvestDate ?? null,
+    days_since_planting: detail?.daysSincePlanting ?? null,
+    growth_stage: detail?.growthStage ?? null,
+    planting_confidence: detail?.plantingConfidence ?? null,
+    evi: detail?.evi ?? null,
+    savi: detail?.savi ?? null,
+    ndwi: detail?.ndwi ?? null,
+    agro_score: detail?.agroScore ?? null,
+    hybrid_score: detail?.hybridScore ?? null,
+    cnn_prob_barley: detail?.cnnProbBarley ?? null,
+    cnn_prob_non_barley: detail?.cnnProbNonBarley ?? null,
   };
 }
 
@@ -763,7 +1675,7 @@ interface MaltoPipelineResult {
  * Pipeline complet reprenant la méthode du frontend Malto :
  *  1) tracé automatique des parcelles — POST /api/zone-parcels (modèle VHR
  *     Delineate Anything JECAM) ;
- *  2) classification orge/non-orge — POST /api/analyze avec `traced_parcels`
+ *  2) classification orge / autre culture — POST /api/analyze avec `traced_parcels`
  *     (classifieur RF Sentinel-2 appliqué aux contours tracés).
  * Les parcelles tracées sont ajoutées au store (déduplication par id) puis
  * classées (culture orge + confiance) lorsque le backend les confirme.
@@ -816,7 +1728,7 @@ async function runMaltoPipeline(
     patchLog(`Tracé automatique indisponible : ${err instanceof Error ? err.message : String(err)}`, 'warn');
   }
 
-  // 2) Classification orge/non-orge (RF Sentinel-2) des contours tracés
+  // 2) Classification orge / autre culture (RF Sentinel-2) des contours tracés
   // automatiquement ET des parcelles tracées à la main dans le périmètre.
   const current = getState();
   const manualParcels = parcelsForAnalysis(
@@ -830,7 +1742,7 @@ async function runMaltoPipeline(
   const analysisParcels = [...manualParcels, ...traced].filter((p) => !alreadyAnalyzed.has(p.id));
   const skippedCount = manualParcels.length + traced.length - analysisParcels.length;
   patchLog(
-    `Classification orge/non-orge (RF Sentinel-2) sur ${traced.length} contour(s) automatique(s) `
+    `Classification orge / autre culture (RF Sentinel-2) sur ${traced.length} contour(s) automatique(s) `
     + `et ${manualParcels.length} parcelle(s) tracée(s) manuellement…`,
   );
   if (skippedCount > 0) {
@@ -902,7 +1814,7 @@ async function runMaltoPipeline(
               culture: 'orge' as CultureId,
               confidence: c.conf,
               probs: { orge: c.conf } as Partial<Record<CultureId, number>>,
-              status: 'non_verifie' as const,
+              status: statusFromConfidence('orge', c.conf),
               analysisId: id,
               modelVersion: `Malto RF orge${c.ndvi != null ? ` · NDVI ${Math.round(c.ndvi)} %` : ''}`,
               processedAt: stamp(),

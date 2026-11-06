@@ -1,12 +1,14 @@
 import { Fragment, useMemo, useState } from 'react';
 import {
-  X, Pencil, ClipboardCheck, Flag, Trash2, Merge, Split, Check, Move, Wheat,
+  X, Pencil, ClipboardCheck, Flag, Trash2, Merge, Split, Check, Move, Wheat, Loader2,
 } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { CULTURES, CULTURE_BY_ID, ROLES, SEASONS, SEASON_BY_ID } from '../data/constants';
-import { fmtDate, fmtHa, fmtPct } from '../lib/format';
+import { fmtDate, fmtHa, fmtPct, shortId, withoutToolName } from '../lib/format';
 import { isUncertain } from '../lib/filter';
 import { ringAreaHa } from '../lib/geometry';
+import { splitParcelByCut } from '../lib/polygon-split';
+import { PREVIEW_SIZE, previewPolygonPoints } from '../lib/parcel-preview';
 import { isAnalyzedParcel } from '../lib/analysis-parcels';
 import { mapCulture } from '../api/maltoAdapter';
 import { api } from '../api/services';
@@ -34,15 +36,37 @@ function fmtMonth(iso: string): string {
   return d.toLocaleDateString('fr-FR', { month: 'short', year: '2-digit' });
 }
 
+/**
+ * Aperçu vectoriel de la parcelle.
+ *
+ * Le dessin est calculé dans un carré de 320 px (rendu 2× de la vignette de
+ * 160 px) : les coordonnées sont converties en pixels, le contour garde une
+ * épaisseur constante de 2 px (`non-scaling-stroke`) et le remplissage est
+ * opaque. Le contour reste donc net à toute taille d’écran, sans déformation,
+ * au lieu du trait fin et translucide qui rendait l’aperçu flou.
+ */
 function Shape({ p, color }: { p: Parcel; color: string }) {
-  const lats = p.coords.map((c) => c[0]), lngs = p.coords.map((c) => c[1]);
-  const minLa = Math.min(...lats), maxLa = Math.max(...lats), minLo = Math.min(...lngs), maxLo = Math.max(...lngs);
-  const k = Math.cos((p.centroid[0] * Math.PI) / 180);
-  const w = (maxLo - minLo) * k, h = maxLa - minLa, m = Math.max(w, h) * 0.18;
-  const pts = p.coords.map(([la, lo]) => `${(lo - minLo) * k + m},${maxLa - la + m}`).join(' ');
+  const pts = previewPolygonPoints(p.coords, p.centroid);
   return (
-    <svg viewBox={`0 0 ${w + 2 * m} ${h + 2 * m}`} className="shape" role="img" aria-label="Géométrie de la parcelle">
-      <polygon points={pts} fill={color} fillOpacity={0.6} stroke="#12262B" strokeWidth={Math.max(w, h) * 0.012} strokeLinejoin="round" />
+    <svg
+      viewBox={`0 0 ${PREVIEW_SIZE} ${PREVIEW_SIZE}`}
+      preserveAspectRatio="xMidYMid meet"
+      shapeRendering="geometricPrecision"
+      className="shape"
+      role="img"
+      aria-label={pts ? 'Géométrie de la parcelle' : 'Géométrie indisponible'}
+    >
+      {pts && (
+        <polygon
+          points={pts}
+          fill={color}
+          fillOpacity={0.92}
+          stroke="#16231E"
+          strokeWidth={2}
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
     </svg>
   );
 }
@@ -61,7 +85,7 @@ function NdviSpark({ points }: { points: VegetationPoint[] }) {
   return (
     <figure className="spark">
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Série NDVI sur ${usable.length} mois`}>
-        <path d={path} fill="none" stroke="#0F7F86" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+        <path d={path} fill="none" stroke="#03793C" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
       </svg>
       <figcaption className="muted-sm">
         {fmtMonth(usable[0].date)} → {fmtMonth(usable[usable.length - 1].date)} · NDVI de{' '}
@@ -73,40 +97,56 @@ function NdviSpark({ points }: { points: VegetationPoint[] }) {
 
 /** Fiche culture : ce qui est enregistré en base pour la parcelle, avant tout détail de contour. */
 export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors: Record<CultureId, string> }) {
-  const cultureId = mapCulture(detail.detected ?? detail.declared);
+  const detectedLabel = detail.detected?.trim() ?? '';
+  // Une culture seulement déclarée (contour importé, pas encore analysé) ne doit
+  // pas être présentée comme un résultat de classification.
+  const declaredOnly = !detectedLabel && !!detail.declared;
+  const cultureId = mapCulture(detectedLabel || detail.declared);
+  // Libellé brut du modèle en pastille : on n'affiche plus l'identique (libellé
+  // « Orge » ou identifiant `orge`, `sol_nu`…) ni l'identifiant de la culture
+  // retenue, qui apparaissait comme une seconde classe contradictoire.
+  const raw = detectedLabel;
+  const rawDetected = raw && raw !== CULTURE_BY_ID[cultureId].label && raw.toLowerCase() !== cultureId
+    ? raw
+    : null;
   const scores = [
     { label: 'Orge (CNN)', value: detail.cnnProbBarley },
-    { label: 'Non-orge (CNN)', value: detail.cnnProbNonBarley },
+    { label: 'Autre culture (CNN)', value: detail.cnnProbNonBarley },
     { label: 'Score agro', value: detail.agroScore },
     { label: 'Score hybride', value: detail.hybridScore },
   ].filter((score) => score.value != null);
 
+  const indices = INDEX_ROWS.filter(({ key }) => (detail[key] as number | null) != null);
+
   return (
     <>
       <section aria-label="Culture enregistrée">
-        <h3><Wheat size={13} /> Culture enregistrée</h3>
+        <h3><Wheat size={13} /> {declaredOnly ? 'Culture déclarée' : 'Culture enregistrée'}</h3>
         <div className="culture-line">
           <Swatch color={colors[cultureId]} size={14} />
           <strong>{CULTURE_BY_ID[cultureId].label}</strong>
-          {detail.detected && detail.detected !== CULTURE_BY_ID[cultureId].label && (
-            <Badge tone="muted">{detail.detected}</Badge>
-          )}
+          {detail.confidence != null && <span className="culture-line__pct">{fmtScore(detail.confidence)}</span>}
+          {rawDetected && <Badge tone="muted">{rawDetected}</Badge>}
         </div>
         <dl className="kv kv--wide">
-          {detail.confidence != null && <><dt>Confiance du modèle</dt><dd>{fmtScore(detail.confidence)}</dd></>}
-          {detail.declared && <><dt>Culture déclarée</dt><dd>{detail.declared}</dd></>}
-          {detail.seasonLabel && <><dt>Saison / stade</dt><dd>{detail.seasonLabel}</dd></>}
-          {detail.source && <><dt>Source</dt><dd>{detail.source}</dd></>}
+          {detail.declared && !declaredOnly && <><dt>Déclarée</dt><dd>{detail.declared}</dd></>}
+          {detail.seasonLabel && <><dt>Saison · stade</dt><dd>{detail.seasonLabel}</dd></>}
+          {detail.source && <><dt>Source</dt><dd>{withoutToolName(detail.source)}</dd></>}
         </dl>
-        {detail.verdict && <p className="culture-verdict">{detail.verdict}</p>}
-        {detail.details && <p className="hint">{detail.details}</p>}
+        {detail.verdict && <p className="culture-verdict">{withoutToolName(detail.verdict)}</p>}
+        {detail.details && (
+          <details className="fold">
+            <summary>Détails du modèle</summary>
+            <p>{withoutToolName(detail.details)}</p>
+          </details>
+        )}
       </section>
 
-      {(detail.ndvi != null || detail.ndre != null || detail.evi != null || detail.savi != null || detail.ndwi != null) && (
+      {indices.length > 0 && (
         <section>
           <h3>Indices de végétation</h3>
           <div className="indices">
-            {INDEX_ROWS.map(({ key, label }) => (
+            {indices.map(({ key, label }) => (
               <div className="index" key={key}>
                 <span>{label}</span>
                 <b>{fmtScore(detail[key] as number | null)}</b>
@@ -122,17 +162,17 @@ export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors
           <h3>Cycle cultural</h3>
           <dl className="kv kv--wide">
             {detail.growthStage && <><dt>Stade</dt><dd>{detail.growthStage}</dd></>}
-            {detail.plantingDate && <><dt>Semis estimé</dt><dd>{fmtDate(detail.plantingDate)}</dd></>}
-            {detail.harvestDate && <><dt>Récolte estimée</dt><dd>{fmtDate(detail.harvestDate)}</dd></>}
-            {detail.daysSincePlanting != null && <><dt>Depuis le semis</dt><dd>{detail.daysSincePlanting} jours</dd></>}
-            {detail.plantingConfidence != null && <><dt>Confiance du semis</dt><dd>{fmtScore(detail.plantingConfidence)}</dd></>}
+            {detail.plantingDate && <><dt>Semis</dt><dd>{fmtDate(detail.plantingDate)}</dd></>}
+            {detail.harvestDate && <><dt>Récolte</dt><dd>{fmtDate(detail.harvestDate)}</dd></>}
+            {detail.daysSincePlanting != null && <><dt>Âge</dt><dd>{detail.daysSincePlanting} j</dd></>}
+            {detail.plantingConfidence != null && <><dt>Confiance semis</dt><dd>{fmtScore(detail.plantingConfidence)}</dd></>}
           </dl>
         </section>
       )}
 
       {(detail.soilType || detail.riskFactors.length > 0) && (
         <section>
-          <h3>Sol et facteurs de risque</h3>
+          <h3>Sol et risques</h3>
           <dl className="kv kv--wide">
             {detail.soilType && <><dt>Type de sol</dt><dd>{detail.soilType}</dd></>}
           </dl>
@@ -151,14 +191,16 @@ export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors
 
       {scores.length > 0 && (
         <section>
-          <h3>Scores des modèles</h3>
-          <dl className="kv kv--wide">
-            {scores.map((score) => (
-              <Fragment key={score.label}>
-                <dt>{score.label}</dt><dd>{fmtScore(score.value)}</dd>
-              </Fragment>
-            ))}
-          </dl>
+          <details className="fold">
+            <summary>Scores du modèle</summary>
+            <dl className="kv kv--wide">
+              {scores.map((score) => (
+                <Fragment key={score.label}>
+                  <dt>{score.label}</dt><dd>{fmtScore(score.value)}</dd>
+                </Fragment>
+              ))}
+            </dl>
+          </details>
         </section>
       )}
 
@@ -173,9 +215,9 @@ export function CulturePanel({ detail, colors }: { detail: CultureDetail; colors
         <section>
           <h3>Enregistrement</h3>
           <dl className="kv kv--wide">
-            {detail.ownerName && <><dt>Propriétaire / exploitant</dt><dd>{detail.ownerName}</dd></>}
+            {detail.ownerName && <><dt>Propriétaire</dt><dd>{detail.ownerName}</dd></>}
             {detail.createdAt && <><dt>Enregistrée le</dt><dd>{fmtDate(detail.createdAt, true)}</dd></>}
-            {detail.notes && <><dt>Notes</dt><dd>{detail.notes}</dd></>}
+            {detail.notes && <><dt>Notes</dt><dd>{withoutToolName(detail.notes)}</dd></>}
           </dl>
         </section>
       )}
@@ -195,16 +237,33 @@ export default function ParcelDrawer({ onAnalyze, canLaunch }: { onAnalyze?: () 
   const select = useApp((s) => s.select);
   const editingParcelId = useApp((s) => s.editingParcelId);
   const editingCoords = useApp((s) => s.editingCoords);
+  const splitParcelId = useApp((s) => s.splitParcelId);
+  const splitDraft = useApp((s) => s.splitDraft);
+  const splitSaving = useApp((s) => s.splitSaving);
   const analyzingParcelId = useApp((s) => s.analyzingParcelId);
-  const { startEditParcel, cancelEditParcel, saveEditParcel } = useApp.getState();
+  const {
+    startEditParcel, cancelEditParcel, saveEditParcel,
+    startSplitParcel, undoSplitPoint, clearSplitDraft, cancelSplitParcel, saveSplitParcel,
+  } = useApp.getState();
   const [modal, setModal] = useState<ModalKind | null>(null);
 // Prop defaults for compatibility with MapToolbar usage
 const analyzeAction = onAnalyze || (() => alert('Analyse non disponible'));
 const launchAllowed = canLaunch !== false;
 
   const p = useMemo(() => parcels.find((x) => x.id === id), [parcels, id]);
+  const splitting = !!p && splitParcelId === p.id;
+  // Aperçu recalculé seulement quand le tracé change : les rendus déclenchés par
+  // les toasts, l’analyse ou les cultures n’ont pas à refaire la géométrie.
+  // Ce useMemo reste avant le retour anticipé `if (!p)` pour respecter l’ordre
+  // des hooks entre deux rendus (fiche ouverte / fiche fermée).
+  const splitPreview = useMemo(
+    () => (splitting && p ? splitParcelByCut(p.coords, splitDraft) : null),
+    [splitting, p, splitDraft],
+  );
   if (!p) return null;
   const editing = editingParcelId === p.id && !!editingCoords;
+  const splitError = splitPreview && !splitPreview.ok ? splitPreview.error : null;
+  const splitParts = splitPreview && splitPreview.ok ? splitPreview.parts : null;
   const r = p.results[seasonId];
   const detail = p.cultureDetail;
   const hasCulture = !!detail || (!!r && r.culture !== 'inconnue');
@@ -222,6 +281,7 @@ const launchAllowed = canLaunch !== false;
     <aside className="drawer" aria-label="Fiche de la parcelle">
       <header className="drawer__head">
         <div>
+          <h2>{shortId(p.id)}</h2>
           <p>{commune?.name} · {region?.name}</p>
         </div>
         <button className="icon-btn" onClick={() => select(null)} aria-label="Fermer la fiche"><X size={18} /></button>
@@ -233,7 +293,7 @@ const launchAllowed = canLaunch !== false;
             <b><Move size={14} /> Édition du contour</b>
             <span className="hint">{editingCoords.length} sommets</span>
           </div>
-          <p className="hint">Déplacez les points blancs du polygone sur la carte pour ajuster la parcelle, puis validez.</p>
+          <p className="hint">Déplacez les points sur la carte, puis validez.</p>
           <dl className="kv">
             <dt>Superficie après modification</dt>
             <dd className="big">{fmtHa(ringAreaHa(editingCoords))}</dd>
@@ -245,11 +305,62 @@ const launchAllowed = canLaunch !== false;
         </div>
       )}
 
+      {splitting && (
+        <div className="editbar" role="region" aria-label="Mode scission de la parcelle">
+          <div className="editbar__head">
+            <b><Split size={14} /> Scinder la parcelle</b>
+            <span className="hint">{splitDraft.length} sommet{splitDraft.length > 1 ? 's' : ''}</span>
+          </div>
+          <p className="hint">
+            Posez le départ sur le contour, ajoutez autant de sommets que nécessaire pour suivre
+            la limite réelle (talus, chemin, haie), puis terminez sur le bord opposé.
+          </p>
+          <p className="hint">
+            {splitDraft.length === 0
+              ? 'Cliquez sur le bord de la parcelle pour poser le premier point.'
+              : splitDraft.length === 1
+                ? 'Départ posé. Ajoutez des points, puis terminez sur le bord opposé.'
+                : 'Glissez un point pour l’ajuster ; ajoutez-en d’autres si la limite est irrégulière.'}
+          </p>
+          {splitParts ? (
+            <dl className="kv">
+              <dt>Parties obtenues</dt>
+              <dd className="big">{splitParts.map((part) => fmtHa(ringAreaHa(part))).join(' + ')}</dd>
+            </dl>
+          ) : splitError ? (
+            <p className="note note--warn">{splitError}</p>
+          ) : (
+            <p className="hint">Deux points au minimum, d’un bord à l’autre de la parcelle.</p>
+          )}
+          <div className="actions">
+            <button
+              className="btn btn--primary"
+              onClick={() => { void saveSplitParcel(); }}
+              disabled={!splitParts || splitSaving}
+            >
+              {splitSaving
+                ? <><Loader2 size={14} className="capture-progress__spin" /> Scission en cours…</>
+                : <><Check size={14} /> Valider la scission</>}
+            </button>
+            <button className="btn" onClick={undoSplitPoint} disabled={splitDraft.length === 0 || splitSaving}>
+              Dernier point
+            </button>
+            <button className="btn" onClick={clearSplitDraft} disabled={splitDraft.length === 0 || splitSaving}>
+              Effacer le tracé
+            </button>
+            <button className="btn" onClick={cancelSplitParcel} disabled={splitSaving}>
+              <X size={14} /> Annuler
+            </button>
+          </div>
+          <p className="hint">La partie contenant le centre garde la culture ; l’autre reste à analyser.</p>
+        </div>
+      )}
+
       <div className="drawer__body">
         <div className="drawer__top" aria-label="Aperçu de la parcelle">
           <Shape p={p} color={hasCulture && cultureId ? colors[cultureId] : colors.inconnue} />
           <dl className="kv">
-            <dt>Superficie estimée</dt><dd className="big">{fmtHa(p.areaHa)}</dd>
+            <dt>Superficie</dt><dd className="big">{fmtHa(p.areaHa)}</dd>
             {r && <><dt>Statut</dt><dd><StatusBadge status={r.status} /></dd></>}
           </dl>
         </div>
@@ -267,15 +378,14 @@ const launchAllowed = canLaunch !== false;
               <div className="culture-line">
                 <Swatch color={colors[r.culture]} size={14} />
                 <strong>{CULTURE_BY_ID[r.culture].label}</strong>
-                <span className="muted">confiance {fmtPct(r.confidence)}</span>
+                <span className="culture-line__pct">{fmtPct(r.confidence)}</span>
               </div>
               <ConfidenceBar value={r.confidence} threshold={threshold} />
               {isUncertain(r, threshold) && (
-                <p className="note note--warn">Résultat incertain : à interpréter avec prudence et à confirmer sur le terrain.</p>
+                <p className="note note--warn">Résultat incertain, à confirmer sur le terrain.</p>
               )}
-              <h4>Probabilités par classe</h4>
               <ul className="probs">
-                {probs.map(([c, v]) => (
+                {probs.slice(0, 3).map(([c, v]) => (
                   <li key={c}>
                     <span><Swatch color={colors[c]} size={10} /> {CULTURE_BY_ID[c].label}</span>
                     <div className="probs__bar"><i style={{ width: `${v * 100}%`, background: colors[c] }} /></div>
@@ -283,21 +393,7 @@ const launchAllowed = canLaunch !== false;
                   </li>
                 ))}
               </ul>
-              <p className="hint">Scores du modèle, non calibrés : ce ne sont pas des probabilités garanties.</p>
             </section>
-            {r && (
-              <section>
-                <h3>Source de l'analyse</h3>
-                <dl className="kv kv--wide">
-                  <dt>Saison</dt><dd>{SEASON_BY_ID[r.seasonId]?.label}</dd>
-                  <dt>Images utilisées</dt><dd>{fmtDate(r.observedFrom)} → {fmtDate(r.observedTo)}</dd>
-                  <dt>Traitée le</dt><dd>{fmtDate(r.processedAt)}</dd>
-                  <dt>Modèle</dt><dd>{r.modelVersion}</dd>
-                  <dt>Analyse</dt><dd>{r.analysisId}</dd>
-                  <dt>Détection du contour</dt><dd>{fmtPct(p.detectionConfidence)}</dd>
-                </dl>
-              </section>
-            )}
           </>
         )}
 
@@ -307,7 +403,7 @@ const launchAllowed = canLaunch !== false;
             {commune && <><dt>Commune</dt><dd>{commune.name}</dd></>}
             {region && <><dt>Région</dt><dd>{region.name}</dd></>}
             <dt>Détection du contour</dt><dd>{fmtPct(p.detectionConfidence)}</dd>
-            {p.dataSource && <><dt>Source de la donnée</dt><dd>{p.dataSource}</dd></>}
+            {p.dataSource && <><dt>Source de la donnée</dt><dd>{withoutToolName(p.dataSource)}</dd></>}
             <dt>Créée le</dt><dd>{fmtDate(p.createdAt, true)}</dd>
           </dl>
 
@@ -346,9 +442,22 @@ const launchAllowed = canLaunch !== false;
               </ul>
             </section>
           )}
+
+          {r && (
+            <section>
+              <h3>Source de l’analyse</h3>
+              <dl className="kv kv--wide">
+                <dt>Saison</dt><dd>{SEASON_BY_ID[r.seasonId]?.label}</dd>
+                <dt>Images</dt><dd>{fmtDate(r.observedFrom)} → {fmtDate(r.observedTo)}</dd>
+                <dt>Traitée le</dt><dd>{fmtDate(r.processedAt)}</dd>
+                <dt>Modèle</dt><dd>{withoutToolName(r.modelVersion)}</dd>
+                <dt>Analyse</dt><dd>{r.analysisId}</dd>
+              </dl>
+            </section>
+          )}
         </details>
 
-        <section className="actions">
+        <section className="actions actions--main">
           {can?.launch && !editing && (
             <button
               className="btn btn--primary"
@@ -359,24 +468,38 @@ const launchAllowed = canLaunch !== false;
               <Wheat size={14} /> {isAnalyzing ? 'Analyse en cours…' : 'Analyser'}
             </button>
           )}
-          {can?.correct && !editing && <button className="btn" onClick={() => startEditParcel(p.id)} title="Ou double-cliquez la parcelle sur la carte"><Move size={14} /> Modifier le contour</button>}
-          {can?.correct && hasCulture && (
-            <button className="btn btn--danger" onClick={() => setModal('removeCulture')}>
-              <Trash2 size={14} /> Supprimer la culture
-            </button>
-          )}
-          {can?.correct && r && r.culture !== 'inconnue' && <button className="btn btn--primary" onClick={() => setModal('correct')}><Pencil size={14} /> Corriger la classe</button>}
-          {can?.observe && r && r.culture !== 'inconnue' && <button className="btn" onClick={() => setModal('observe')}><ClipboardCheck size={14} /> Saisir une observation</button>}
-          <button className="btn" onClick={() => setModal('report')}><Flag size={14} /> Signaler un problème</button>
-          {can?.correct && (
-            <>
-              <button className="btn" disabled title="Fusion de polygones — sera reliée à PostGIS (ST_Union)"><Merge size={14} /> Fusionner</button>
-              <button className="btn" disabled title="Scission de polygone — sera reliée à PostGIS (ST_Split)"><Split size={14} /> Scinder</button>
-              <button className="btn btn--danger" onClick={() => setModal('reject')}><Trash2 size={14} /> Supprimer la parcelle</button>
-            </>
+          {can?.correct && r && r.culture !== 'inconnue' && <button className="btn" onClick={() => setModal('correct')}><Pencil size={14} /> Corriger</button>}
+          {can?.correct && !editing && <button className="btn" onClick={() => startEditParcel(p.id)} title="Modifier le contour (ou double-clic sur la carte)"><Move size={14} /> Contour</button>}
+          <button className="btn" onClick={() => setModal('report')}><Flag size={14} /> Signaler</button>
+          {(can?.correct || can?.observe) && (
+            <details className="drawer__more drawer__more--actions">
+              <summary>Plus d’actions</summary>
+              <div className="actions">
+                {can?.observe && r && r.culture !== 'inconnue' && <button className="btn" onClick={() => setModal('observe')}><ClipboardCheck size={14} /> Observation terrain</button>}
+                {can?.correct && hasCulture && (
+                  <button className="btn btn--danger" onClick={() => setModal('removeCulture')}>
+                    <Trash2 size={14} /> Supprimer la culture
+                  </button>
+                )}
+                {can?.correct && (
+                  <>
+                    <button className="btn" disabled title="Fusion de polygones — sera reliée à PostGIS (ST_Union)"><Merge size={14} /> Fusionner</button>
+                    <button
+                      className="btn"
+                      disabled={editing || splitting}
+                      onClick={() => startSplitParcel(p.id)}
+                      title="Découper la parcelle en deux en suivant les limites réelles du terrain"
+                    >
+                      <Split size={14} /> {splitting ? 'Scission en cours…' : 'Scinder'}
+                    </button>
+                    <button className="btn btn--danger" onClick={() => setModal('reject')}><Trash2 size={14} /> Supprimer la parcelle</button>
+                  </>
+                )}
+              </div>
+            </details>
           )}
         </section>
-        <p className="legal">Contour détecté par IA — ce n'est pas une limite foncière officielle. Supprimer la culture ne supprime pas la parcelle.</p>
+        <p className="legal">Contour détecté automatiquement — pas une limite foncière officielle.</p>
       </div>
 
       {modal && (
@@ -449,7 +572,7 @@ function ParcelModal({ kind, parcel, current, onClose }: {
       footer={<><button className="btn btn--ghost" onClick={onClose}>Annuler</button>
         <button className={`btn ${kind === 'reject' || kind === 'removeCulture' ? 'btn--danger' : 'btn--primary'}`} onClick={save} disabled={busy}>
           {busy ? busyLabel : confirmLabel}</button></>}>
-      <p className="muted">{parcel.id}</p>
+      <p className="muted" title={parcel.id}>{shortId(parcel.id)}</p>
       {kind === 'reject' ? (
         <p>La parcelle et son contour seront supprimés définitivement. Pour ne retirer que la culture, utilisez « Supprimer la culture ». Confirmer ?</p>
       ) : kind === 'removeCulture' ? (

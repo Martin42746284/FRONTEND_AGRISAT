@@ -77,6 +77,32 @@ export function isDuplicateVhrParcel(
   return false;
 }
 
+/**
+ * Deux parcelles désignent-elles exactement le même champ (doublon de saisie) ?
+ *
+ * Critère volontairement strict, différent de `isDuplicateVhrParcel` : seuls les
+ * contours superposés (centres à moins de 2 m, surfaces compatibles) sont
+ * reconnus. Cela permet à la suppression d'une culture d'effacer aussi les
+ * lignes doublons créées sur la même parcelle, sans toucher aux parcelles
+ * voisines simplement proches.
+ */
+export function isSameParcelFootprint(
+  a: { id: string; coords: LatLng[]; centroid: LatLng; areaHa: number },
+  b: { id: string; coords: LatLng[]; centroid: LatLng; areaHa: number },
+): boolean {
+  if (a.id === b.id) return true;
+  if (!a.coords?.length || !b.coords?.length || a.areaHa <= 0 || b.areaHa <= 0) return false;
+
+  const maxArea = Math.max(a.areaHa, b.areaHa);
+  const minArea = Math.min(a.areaHa, b.areaHa);
+  if (minArea / maxArea < 0.9) return false;
+
+  const latitude = (a.centroid[0] + b.centroid[0]) / 2;
+  const east = (a.centroid[1] - b.centroid[1]) * mPerDegLng(latitude);
+  const north = (a.centroid[0] - b.centroid[0]) * M_PER_DEG_LAT;
+  return Math.hypot(north, east) <= 2;
+}
+
 export function centroidOf(coords: LatLng[]): LatLng {
   const n = coords.length;
   return [coords.reduce((s, c) => s + c[0], 0) / n, coords.reduce((s, c) => s + c[1], 0) / n];
@@ -102,6 +128,26 @@ export function bboxOf(coords: LatLng[]): [LatLng, LatLng] {
     if (lo > maxLo) maxLo = lo;
   }
   return [[minLa, minLo], [maxLa, maxLo]];
+}
+
+/**
+ * Boîte englobante de plusieurs anneaux [lat,lng] — `null` si aucun sommet
+ * exploitable. Sert au cadrage initial de la carte sur toutes les parcelles.
+ */
+export function bboxOfAll(rings: LatLng[][]): [LatLng, LatLng] | null {
+  let box: [LatLng, LatLng] | null = null;
+  for (const ring of rings) {
+    if (!ring.length) continue;
+    const [[minLa, minLo], [maxLa, maxLo]] = bboxOf(ring);
+    if (![minLa, minLo, maxLa, maxLo].every(Number.isFinite)) continue;
+    box = box
+      ? [
+        [Math.min(box[0][0], minLa), Math.min(box[0][1], minLo)],
+        [Math.max(box[1][0], maxLa), Math.max(box[1][1], maxLo)],
+      ]
+      : [[minLa, minLo], [maxLa, maxLo]];
+  }
+  return box;
 }
 
 /** Enveloppe convexe (monotone chain) sur des points [lat,lng]. */

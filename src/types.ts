@@ -4,7 +4,7 @@ export type CultureId =
   | 'orge' | 'riz' | 'haricot' | 'mais' | 'manioc' | 'pomme_de_terre'
   | 'autre' | 'jachere' | 'sol_nu' | 'vegetation' | 'eau' | 'inconnue';
 
-export type Status = 'non_verifie' | 'verifie_terrain' | 'corrige' | 'incertain' | 'obsolete';
+export type Status = 'confirme' | 'a_verifier' | 'non_verifie' | 'verifie_terrain' | 'corrige' | 'incertain' | 'obsolete';
 export type DisplayMode = 'general' | 'filtre' | 'comparatif';
 export type OthersStyle = 'grise' | 'masque';
 export type Role = 'admin' | 'analyste' | 'terrain' | 'lecteur' | 'gestionnaire';
@@ -99,6 +99,10 @@ export interface Parcel {
   dataSource?: string;
   /** Culture lue en base ; absent si la parcelle n'a pas (ou plus) de culture. */
   cultureDetail?: CultureDetail;
+  /** Contour importé depuis un fichier KML, quelle que soit la culture. */
+  kmlImported?: boolean;
+  /** Blé ou avoine déclaré dans le KML d'origine : toujours classé « Autre culture ». */
+  kmlCulture?: 'ble' | 'avoine';
   rejected?: boolean;
 }
 
@@ -112,7 +116,41 @@ export interface AuditEntry {
   id: string; at: string; userName: string; action: string; object: string;
 }
 
+/** Borne GPS nommée, enregistrée en base et affichée sur la carte. */
+export interface BorneGps {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Emplacement mis en évidence après une recherche (borne ou coordonnées GPS). */
+export interface SearchedLocation {
+  kind: 'borne' | 'coords';
+  lat: number;
+  lng: number;
+  label: string;
+  borneId?: string;
+}
+
 export interface LogLine { at: string; level: 'info' | 'warn' | 'error'; msg: string }
+
+/** Zone d'une analyse de terrain : emplacement et étendue de la capture. */
+export interface AnalysisZone {
+  center: LatLng;
+  /** Bornes géographiques de la capture ; absentes si la capture a échoué. */
+  bounds?: { south: number; west: number; north: number; east: number };
+  /** Largeur de la zone capturée, en mètres (0 si inconnue). */
+  spanM: number;
+  zoom: number;
+}
+
+/** Parcelle retenue par une analyse, telle qu'affichée dans l'historique. */
+export interface AnalysisParcel {
+  id: string; label: string; areaHa: number; center: LatLng;
+}
 
 export interface Analysis {
   id: string; zoneLabel: string; regionId?: string; communeId?: string; seasonId: string;
@@ -121,6 +159,48 @@ export interface Analysis {
   pipelineVersion: string; scenes: number;
   parcelCount?: number; areaHa?: number;
   warnings: string[]; logs: LogLine[]; cached?: boolean; error?: string;
+  /** Zone analysée : renseignée par les analyses de terrain (historique de capture). */
+  zone?: AnalysisZone;
+  /** Aperçu réduit de la capture d'écran analysée (data URL). */
+  captureDataUrl?: string;
+  /** Parcelles détectées et enregistrées par cette analyse. */
+  detected?: AnalysisParcel[];
+}
+
+/**
+ * Culture retenue par une recherche automatique (Orge / Autre culture), telle
+ * qu'enregistrée dans l'historique dédié de la page « Analyses ».
+ *
+ * `parcelId` référence la parcelle en base : retirer cette ligne d'historique
+ * ne supprime ni la parcelle ni sa culture.
+ */
+export interface AutomaticSearchCulture {
+  parcelId: string;
+  /** Identifiant court affiché dans l'historique. */
+  label: string;
+  areaHa: number;
+  culture: 'orge' | 'autre';
+  cultureLabel: string;
+  /** Confiance du modèle, en %, quand elle est fournie. */
+  confidence: number | null;
+}
+
+/** Recherche automatique de cultures consignée dans son propre historique. */
+export interface AutomaticSearchEntry {
+  id: string;
+  createdAt: string;
+  createdBy: string;
+  center: LatLng;
+  radiusM: number;
+  baseTemperature: number;
+  threshold: number;
+  periodDays: number;
+  /** Parcelles examinées et parcelles effectivement analysées. */
+  candidates: number;
+  analyzed: number;
+  alreadyAnalyzed: number;
+  cultures: AutomaticSearchCulture[];
+  notice: string | null;
 }
 
 export interface Filters {

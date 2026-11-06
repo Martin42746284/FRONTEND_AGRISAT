@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import { STATUS_LABEL, STATUS_TONE, ANALYSIS_LABEL, ANALYSIS_TONE } from '../data/constants';
+import { withoutToolName } from '../lib/format';
 import type { AnalysisStatus, Status } from '../types';
 
 export function Badge({ tone = 'neutral', children }: { tone?: string; children: ReactNode }) {
@@ -36,7 +37,7 @@ export function Toasts() {
   const toasts = useApp((s) => s.toasts);
   return (
     <div className="toasts" role="status" aria-live="polite">
-      {toasts.map((t) => <div key={t.id} className={`toast toast--${t.tone}`}>{t.msg}</div>)}
+      {toasts.map((t) => <div key={t.id} className={`toast toast--${t.tone}`}>{withoutToolName(t.msg)}</div>)}
     </div>
   );
 }

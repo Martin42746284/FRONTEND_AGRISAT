@@ -2,6 +2,7 @@ import type L from 'leaflet';
 import type { CropResult, CultureId, DisplayMode, OthersStyle } from '../types';
 import { darken } from './color';
 import { isUncertain } from './filter';
+import { strokeBoostForZoom } from './parcel-outline-style';
 
 export interface StyleCtx {
   colors: Record<CultureId, string>;
@@ -9,6 +10,8 @@ export interface StyleCtx {
   mode: DisplayMode;
   cultures: Set<CultureId>;
   othersStyle: OthersStyle;
+  /** Zoom courant : épaissit les traits quand la carte est dézoomée. */
+  zoom?: number;
 }
 
 /**
@@ -20,14 +23,15 @@ export interface StyleCtx {
 export function computeStyle(r: CropResult, ctx: StyleCtx, selected: boolean): { visible: boolean; options: L.PathOptions } {
   const hasSel = ctx.mode !== 'general' && ctx.cultures.size > 0;
   const isSel = ctx.cultures.has(r.culture);
+  const boost = strokeBoostForZoom(ctx.zoom ?? 15);
 
   if (hasSel && !isSel) {
     if (ctx.mode === 'filtre' && ctx.othersStyle === 'masque') return { visible: false, options: {} };
     return {
       visible: true,
       options: selected
-        ? { color: '#111', weight: 3, fillColor: '#9AA3A1', fillOpacity: 0.35, opacity: 1, dashArray: undefined }
-        : { color: '#9AA3A1', weight: 0.6, fillColor: '#B9C0BE', fillOpacity: 0.22, opacity: 0.55, dashArray: undefined },
+        ? { color: '#111', weight: 3 + boost * 0.5, fillColor: '#9AA3A1', fillOpacity: 0.35, opacity: 1, dashArray: undefined }
+        : { color: '#9AA3A1', weight: 1 + boost * 0.6, fillColor: '#B9C0BE', fillOpacity: 0.22, opacity: 0.55, dashArray: undefined },
     };
   }
 
@@ -46,10 +50,10 @@ export function computeStyle(r: CropResult, ctx: StyleCtx, selected: boolean): {
     fillColor: fill,
     fillOpacity,
     color: darken(fill, 0.4),
-    weight: validated ? 2.2 : 1,
+    weight: (validated ? 2.3 : 1.35) + boost * (validated ? 0.8 : 0.7),
     opacity: 0.95,
-    dashArray: unknown || uncertain ? '4 3' : obsolete ? '1 4' : undefined,
+    dashArray: unknown || uncertain ? '5 4' : obsolete ? '2 4' : undefined,
   };
-  if (selected) Object.assign(options, { color: '#0B1F24', weight: 3.5, fillOpacity: Math.max(fillOpacity, 0.75), dashArray: undefined });
+  if (selected) Object.assign(options, { color: '#16231E', weight: 3.5 + boost * 0.6, fillOpacity: Math.max(fillOpacity, 0.75), dashArray: undefined });
   return { visible: true, options };
 }
