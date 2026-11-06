@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, Circle, CircleDot, ClipboardList,
   Clock, Crosshair, Eye, History, Layers, Leaf, Loader2, MapPin, MoreHorizontal, Play, Plus,
-  RotateCcw, ScanSearch, Search, Sprout, Sun, Thermometer, Trash2, UserRound,
+  RotateCcw, Satellite, ScanSearch, Search, Sprout, Sun, Thermometer, Trash2, UserRound,
 } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import type { Analysis, AnalysisParcel } from '../types';
@@ -12,6 +12,7 @@ import { fmtDate, fmtHa, fmtInt, shortId, withoutToolName } from '../lib/format'
 import { cultureCountsForAnalysis, type AnalysisCultureCounts } from '../lib/analysis-parcels';
 import { AnalysisBadge, Modal } from '../components/ui';
 import NewAnalysisModal from '../components/NewAnalysisModal';
+import '../analysis-page.css';
 
 /** Nombre de parcelles analysées par catégorie, pour une entrée d'historique. */
 function CultureCounts({ counts, variant = 'inline' }: {
@@ -180,19 +181,16 @@ export default function Analyses() {
 
   return (
     <div className={`page page--single an-page an-page--${tab}`}>
+      <div className="an-brand" aria-label="MALTO, cartographie agricole">
+        <img src="/malt.png" alt="MALTO — cartographie agricole" />
+        <Satellite className="an-brand__satellite" size={48} aria-hidden="true" />
+        <span className="an-brand__divider" aria-hidden="true" />
+        <Leaf className="an-brand__leaf" size={40} aria-hidden="true" />
+      </div>
       <div className={`an-hero an-hero--${tab}`} aria-hidden>
-        {tab === 'auto' ? (
-          <>
-            <span className="an-hero__photo" />
-            <span className="an-hero__fade" />
-          </>
-        ) : (
-          <>
-            <span className="an-hero__wave an-hero__wave--1" />
-            <span className="an-hero__wave an-hero__wave--2" />
-            <span className="an-hero__wave an-hero__wave--3" />
-          </>
-        )}
+        <span className="an-hero__photo" />
+        <span className="an-hero__fade" />
+        {tab === 'gemini' && <span className="an-hero__curve" />}
       </div>
 
       <div className="content content--wide an-content">
@@ -211,7 +209,7 @@ export default function Analyses() {
               <h1>Analyses</h1>
               <p className="an-head__sub">
                 {tab === 'gemini'
-                  ? 'Retrouvez chaque passage sur le terrain : la photo capturée, les parcelles repérées et l’avancement du traitement.'
+                  ? 'Pilotez vos analyses de terrain, suivez leur avancement et consultez les résultats cartographiques.'
                   : 'Les cultures repérées autour de vos points de recherche, prêtes à être vérifiées sur la carte.'}
               </p>
             </div>
@@ -234,7 +232,7 @@ export default function Analyses() {
             onClick={() => setTab('gemini')}
           >
             <ScanSearch size={17} />
-            Analyses d’images
+            Analyse Gemini
             <span className="an-tab__count">{fmtInt(analyses.length)}</span>
           </button>
           <button
@@ -247,19 +245,18 @@ export default function Analyses() {
             onClick={() => setTab('auto')}
           >
             <Search size={17} />
-            Recherches sur la carte
+            Recherche automatique
             <span className="an-tab__count">{fmtInt(automaticSearches.length)}</span>
           </button>
         </div>
 
         {tab === 'gemini' && (
           <div className="an-tabs__panel" role="tabpanel" id="an-tabpanel-gemini" aria-labelledby="an-tab-gemini">
-            {analyses.length > 0 && (
-              <section className="an-summary" aria-label="Synthèse des analyses d’images">
+            <section className="an-summary" aria-label="Synthèse des analyses d’images">
                 <div className="an-summary__item">
                   <span className="an-summary__icon an-summary__icon--green"><BarChart3 size={24} /></span>
                   <div className="an-summary__body">
-                    <span className="an-summary__label">Analyses d’images</span>
+                    <span className="an-summary__label">Analyses Gemini</span>
                     <b className="an-summary__value">{fmtInt(analyses.length)}</b>
                     <span className="an-summary__hint">{fmtInt(followedParcels)} parcelles suivies</span>
                   </div>
@@ -269,7 +266,7 @@ export default function Analyses() {
                   <div className="an-summary__body">
                     <span className="an-summary__label">En cours</span>
                     <b className="an-summary__value">{fmtInt(running)}</b>
-                    <span className="an-summary__hint">{waiting ? `${fmtInt(waiting)} en attente` : 'Rien en attente'}</span>
+                    <span className="an-summary__hint">{waiting ? `${fmtInt(waiting)} en attente` : 'Aucune file d’attente'}</span>
                   </div>
                 </div>
                 <div className="an-summary__item">
@@ -278,7 +275,7 @@ export default function Analyses() {
                     <span className="an-summary__label">Terminées</span>
                     <b className="an-summary__value">{fmtInt(finished)}</b>
                     <span className="an-summary__hint">
-                      {warningCount ? `${fmtInt(warningCount)} avec avertissement${warningCount > 1 ? 's' : ''}` : 'Tout s’est bien passé'}
+                      {warningCount ? `${fmtInt(warningCount)} avec avertissement${warningCount > 1 ? 's' : ''}` : 'Sans avertissement'}
                     </span>
                   </div>
                 </div>
@@ -287,19 +284,18 @@ export default function Analyses() {
                   <div className="an-summary__body">
                     <span className="an-summary__label">Échecs</span>
                     <b className="an-summary__value">{fmtInt(failures)}</b>
-                    <span className="an-summary__hint">{failures ? 'À relancer' : 'Rien à signaler'}</span>
+                    <span className="an-summary__hint">{failures ? 'À relancer' : 'Aucun incident'}</span>
                   </div>
                 </div>
-              </section>
-            )}
+            </section>
 
             <section className="an-panel" aria-label="Historique des analyses d’images">
               <div className="an-panel__head">
                 <div className="an-panel__title">
                   <span className="an-panel__icon"><History size={22} /></span>
                   <div>
-                    <h2>Vos analyses de terrain</h2>
-                    <p className="hint">La photo capturée, les parcelles repérées et l’état du traitement, du plus récent au plus ancien.</p>
+                    <h2>Historique des analyses</h2>
+                    <p className="hint">Détections et analyses de parcelles réalisées avec Gemini.</p>
                   </div>
                 </div>
                 <span className="an-panel__count">
@@ -321,7 +317,7 @@ export default function Analyses() {
                 </div>
               ) : (
                 <ul className="an-list">
-                  {analyses.map((a) => {
+                  {analyses.map((a, index) => {
                     const rowCounts = cultureCounts.get(a.id);
                     const cultureRunning = cultureJob?.analysisId === a.id;
                     // Entrée de l'historique des captures : l'analyse porte sur toutes
@@ -344,8 +340,9 @@ export default function Analyses() {
 
                         <div className="an-row__main">
                           <div className="an-row__title">
-                            <span className="an-row__name">Capture du {fmtDate(a.createdAt)}</span>
-                            <span className="an-row__ref" title={a.id}>#{shortId(a.id)}</span>
+                            <span className="an-row__name" title={a.id}>
+                              CAP-…-{String(analyses.length - index).padStart(3, '0')}
+                            </span>
                             {a.cached && <span className="tag" title="Résultat réutilisé depuis une analyse précédente">déjà calculée</span>}
                             <AnalysisBadge status={a.status} />
                           </div>
@@ -398,7 +395,7 @@ export default function Analyses() {
                           )}
                           {a.zone && (
                             <button className="an-action" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}>
-                              <MapPin size={15} /> Voir sur la carte
+                              <MapPin size={15} /> Carte
                             </button>
                           )}
                           <div className="an-row__more">
