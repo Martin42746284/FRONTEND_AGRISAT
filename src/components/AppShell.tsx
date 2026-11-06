@@ -69,6 +69,7 @@ export default function AppShell() {
     <div className={`shell ${onMap ? 'shell--map' : ''} ${pathname === '/analyses' ? 'shell--analyses' : ''} ${pathname === '/parcelles' ? 'shell--parcels' : ''}`}>
       <main className="shell__page"><Outlet /></main>
 
+      {!onMap && <PageHeader />}
 
       {onMap && <img className="brandchip" src="/malt.png" width={120} height={40} alt="Logo MALTO" />}
 
@@ -79,8 +80,6 @@ export default function AppShell() {
           </NavLink>
         ))}
       </nav>
-
-      {!onMap && <PageHeader />}
 
       <div className="topright">
         {onMap && (
