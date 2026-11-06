@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, Circle, CircleDot, ClipboardList,
-  Clock, Crosshair, Eye, History, Layers, Leaf, Loader2, MapPin, MoreHorizontal, Play, Plus,
-  RotateCcw, Satellite, ScanSearch, Search, Sprout, Sun, Thermometer, Trash2, UserRound,
+  Clock, Compass, Crosshair, Eye, History, Layers, Leaf, Loader2, MapPin, MoreHorizontal, Play, Plus,
+  RotateCcw, Satellite, ScanSearch, Search, Sparkles, Sprout, Sun, Thermometer, Trash2, UserRound,
 } from 'lucide-react';
 import { useApp } from '../store/useApp';
 import type { Analysis, AnalysisParcel } from '../types';
@@ -24,20 +24,20 @@ function CultureCounts({ counts, variant = 'inline' }: {
   return (
     <div className={`an-cultures ${variant === 'detail' ? 'an-cultures--detail' : ''}`}>
       <span className="an-culture">
-        <i className="an-culture__dot" style={{ background: colors.orge }} />
+        <i className="an-culture__dot an-culture__dot--orge" style={{ background: colors.orge || '#e5b326' }} />
         <span className="an-culture__label">Orge</span>
         <b className="an-culture__count">{fmtInt(counts.orge)}</b>
         <span className="an-culture__unit">{plural(counts.orge)}</span>
       </span>
       <span className="an-culture">
-        <i className="an-culture__dot" style={{ background: colors.autre }} />
+        <i className="an-culture__dot an-culture__dot--autre" style={{ background: colors.autre || '#7352a5' }} />
         <span className="an-culture__label">Autres cultures</span>
         <b className="an-culture__count">{fmtInt(counts.autres)}</b>
         <span className="an-culture__unit">{plural(counts.autres)}</span>
       </span>
       {counts.pending > 0 && (
         <span className="an-culture an-culture--pending">
-          <i className="an-culture__dot" />
+          <i className="an-culture__dot an-culture__dot--pending" />
           <span className="an-culture__label">À traiter</span>
           <b className="an-culture__count">{fmtInt(counts.pending)}</b>
           <span className="an-culture__unit">sur {fmtInt(counts.total)}</span>
@@ -181,46 +181,43 @@ export default function Analyses() {
 
   return (
     <div className={`page page--single an-page an-page--${tab}`}>
-      <div className="an-brand" aria-label="MALTO, cartographie agricole">
-        <img src="/malt.png" alt="MALTO — cartographie agricole" />
-        <Satellite className="an-brand__satellite" size={48} aria-hidden="true" />
-        <span className="an-brand__divider" aria-hidden="true" />
-        <Leaf className="an-brand__leaf" size={40} aria-hidden="true" />
-      </div>
-      <div className={`an-hero an-hero--${tab}`} aria-hidden>
-        <span className="an-hero__photo" />
-        <span className="an-hero__fade" />
-        {tab === 'gemini' && <span className="an-hero__curve" />}
-      </div>
-
-      <div className="content content--wide an-content">
-        <header className="an-head">
-          <div className="an-head__title">
-            <span className={`an-head__icon an-head__icon--${tab}`}>
-              {tab === 'gemini' ? <Leaf size={40} /> : (
-                <span className="an-head__glass">
-                  <Search size={38} />
-                  <Leaf size={15} className="an-head__leaf" />
-                </span>
-              )}
-            </span>
-            <div>
-              <p className="an-head__hello"><Sun size={15} /> {greeting()}</p>
+      {/* Grand bandeau Hero avec fond de blé, marque MALTO, titre, sous-titre et bouton d'action */}
+      <section className="an-hero-banner" aria-label="En-tête de la page Analyses">
+        <div className="an-hero-banner__inner">
+          <div className="an-hero-banner__brand">
+            <div className="an-brand-logo">
+              <span className="an-brand-logo__malto">malto</span>
+              <span className="an-brand-logo__sub">cartographie agricole</span>
+            </div>
+            <Satellite className="an-hero-banner__satellite" size={40} aria-hidden="true" />
+            <span className="an-hero-banner__divider" aria-hidden="true" />
+            <Leaf className="an-hero-banner__leaf" size={32} aria-hidden="true" />
+            <div className="an-hero-banner__titles">
               <h1>Analyses</h1>
-              <p className="an-head__sub">
+              <p className="an-hero-banner__sub">
                 {tab === 'gemini'
                   ? 'Pilotez vos analyses de terrain, suivez leur avancement et consultez les résultats cartographiques.'
                   : 'Les cultures repérées autour de vos points de recherche, prêtes à être vérifiées sur la carte.'}
               </p>
             </div>
           </div>
-          {can.launch && tab === 'gemini' && (
-            <button className="btn btn--primary an-new" onClick={() => setCreating(true)}>
-              <Plus size={17} /> Nouvelle analyse
-            </button>
-          )}
-        </header>
 
+          <div className="an-hero-banner__cta">
+            <button className="an-btn-new" onClick={() => setCreating(true)} title="Lancer une nouvelle analyse">
+              <Plus size={18} /> Nouvelle analyse
+            </button>
+          </div>
+        </div>
+
+        {/* Transition en vague douce agrandie au bas du bandeau */}
+        <div className="an-hero-banner__wave" aria-hidden="true">
+          <svg viewBox="0 0 1440 90" preserveAspectRatio="none">
+            <path d="M0,20 C360,75 720,85 1080,45 C1260,25 1380,35 1440,25 L1440,90 L0,90 Z" fill="#f4f7f4" />
+          </svg>
+        </div>
+      </section>
+
+      <div className="content content--wide an-content">
         <div className="an-tabs" role="tablist" aria-label="Type d’historique">
           <button
             type="button"
@@ -231,7 +228,7 @@ export default function Analyses() {
             className={`an-tab ${tab === 'gemini' ? 'is-active' : ''}`}
             onClick={() => setTab('gemini')}
           >
-            <ScanSearch size={17} />
+            <Sparkles size={16} />
             Analyse Gemini
             <span className="an-tab__count">{fmtInt(analyses.length)}</span>
           </button>
@@ -244,7 +241,7 @@ export default function Analyses() {
             className={`an-tab ${tab === 'auto' ? 'is-active' : ''}`}
             onClick={() => setTab('auto')}
           >
-            <Search size={17} />
+            <Search size={16} />
             Recherche automatique
             <span className="an-tab__count">{fmtInt(automaticSearches.length)}</span>
           </button>
@@ -354,7 +351,7 @@ export default function Analyses() {
                               <CalendarDays size={13} /> {SEASON_BY_ID[a.seasonId]?.short ?? '—'}
                             </span>
                             <span className="an-meta an-person">
-                              <i className="an-avatar" aria-hidden>{initialsOf(a.createdBy)}</i> {a.createdBy}
+                              <UserRound size={13} /> {a.createdBy}
                             </span>
                             <time className="an-meta" dateTime={a.createdAt}>
                               <Clock size={13} /> {fmtDate(a.createdAt, true)}
@@ -394,8 +391,8 @@ export default function Analyses() {
                             </button>
                           )}
                           {a.zone && (
-                            <button className="an-action" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}>
-                              <MapPin size={15} /> Carte
+                            <button className="an-action an-action--map" onClick={(e) => { e.stopPropagation(); showOnMap(a); }}>
+                              <Compass size={15} /> Carte
                             </button>
                           )}
                           <div className="an-row__more">

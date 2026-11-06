@@ -1152,7 +1152,7 @@ body[data-filters="open"] .legend { left: 424px; }
   position: absolute; inset: 0 0 auto 0; height: 300px;
   overflow: hidden; pointer-events: none; z-index: 0;
 }
-.an-page .an-content { position: relative; z-index: 1; max-width: none; padding: 24px 24px 56px; }
+.an-page .an-content { position: relative; z-index: 1; max-width: none; padding: 0 32px 64px 116px; }
 
 /* Décor de l'onglet Gemini : nappes vertes et bandes blanches translucides. */
 .an-hero--gemini {
