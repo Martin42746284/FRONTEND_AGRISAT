@@ -1,14 +1,8 @@
 /* Analyse Gemini — rendu inspiré de la maquette fournie. */
 .shell--analyses .pageheader .hstats { display: none; }
 .page.an-page { padding-left: 0; background: #f4f7f4; }
-.an-page.an-page--gemini .an-hero { height: 220px; }
-.an-page.an-page--gemini .an-hero--gemini { background: #d7e2bb; }
-.an-page.an-page--gemini .an-hero--gemini::before {
-  content: '';
-  position: absolute;
-  inset: 0 0 22px 80%;
-  background: url('/analyse-hero-field.jpg') center 62% / cover no-repeat;
-}
+.an-page.an-page--gemini .an-hero { height: 270px; }
+.an-page.an-page--gemini .an-hero--gemini { background: linear-gradient(90deg, #f8fbf8 0%, #eff5e8 58%, #b9cf8a 100%); }
 .an-page .an-content { padding-top: 18px; }
 .an-page .an-content .an-head { margin-bottom: 23px; }
 .an-page .an-head__title { flex: 1 1 620px; }
@@ -40,28 +34,36 @@
   border-radius: 999px;
   font-size: 16px;
 }
+.an-page.an-page--gemini .an-hero--gemini::before,
 .an-page--gemini .an-hero--gemini::after { content: none; }
 .an-page--gemini .an-hero--gemini .an-hero__photo {
   position: absolute;
-  inset: 0 20% 22px 45%;
-  background: url('/analyse-hero-bg.jpg') left center / 100% 100% no-repeat;
-  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 88%);
+  inset: 0;
+  background-image: url('/analyse-hero-bg.jpg');
+  background-position: 78% center;
+  background-size: auto 100%;
+  background-repeat: no-repeat;
+  -webkit-mask-image: linear-gradient(90deg, transparent 43%, #000 53%, #000 82%, transparent 94%);
+  mask-image: linear-gradient(90deg, transparent 43%, #000 53%, #000 82%, transparent 94%);
 }
 .an-page--gemini .an-hero--gemini .an-hero__fade {
   position: absolute;
-  inset: 0 0 22px;
-  background: linear-gradient(90deg, #f8fbf8 0%, rgba(248,251,248,.96) 19%, rgba(248,251,248,.72) 32%, rgba(248,251,248,.2) 46%, transparent 57%), linear-gradient(180deg, transparent 73%, #f4f7f4 100%);
+  inset: 0;
+  background: linear-gradient(90deg, #f8fbf8 0%, #f8fbf8 32%, rgba(248,251,248,.92) 42%, rgba(248,251,248,.42) 51%, transparent 63%), linear-gradient(180deg, #f8fbf8 0%, transparent 18%, transparent 78%, #f4f7f4 100%);
 }
 .an-page--gemini .an-hero--gemini .an-hero__curve {
   position: absolute;
   z-index: 1;
-  left: -8%;
-  right: -8%;
-  bottom: -1px;
-  height: 92px;
-  background: #f4f7f4;
-  border-radius: 50% 50% 0 0 / 65% 65% 0 0;
-  box-shadow: 0 -4px 0 #83b84b;
+  inset: 0;
+  pointer-events: none;
+  height: 100%;
+  border-radius: 0;
+  background-color: transparent;
+  transform: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1759 270' preserveAspectRatio='none'%3E%3Cpath d='M0 212 C42 203 86 188 130 177 C172 166 218 158 265 158 C320 157 365 165 410 177 C460 190 510 192 560 197 C620 202 670 215 720 232 C765 247 806 259 855 262 C920 266 978 263 1035 259 C1090 255 1145 247 1200 241 C1260 235 1320 226 1380 221 C1440 216 1495 216 1550 211 C1615 205 1680 200 1759 202 L1759 270 L0 270 Z' fill='%23f4f7f4'/%3E%3Cpath d='M0 212 C42 203 86 188 130 177 C172 166 218 158 265 158 C320 157 365 165 410 177 C460 190 510 192 560 197 C620 202 670 215 720 232 C765 247 806 259 855 262 C920 266 978 263 1035 259 C1090 255 1145 247 1200 241 C1260 235 1320 226 1380 221 C1440 216 1495 216 1550 211 C1615 205 1680 200 1759 202' fill='none' stroke='%2383b84b' stroke-width='4'/%3E%3C/svg%3E");
+  background-position: center top;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
 }
 .an-page--gemini .an-head__hello { display: none; }
 .an-page--gemini .an-content .an-head h1 { color: #0b5c35; font-size: 40px; font-weight: 750; }
