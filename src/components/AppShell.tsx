@@ -66,7 +66,7 @@ export default function AppShell() {
   ].filter((i) => i.show);
 
   return (
-    <div className={`shell ${onMap ? 'shell--map' : ''} ${pathname === '/analyses' ? 'shell--analyses' : ''}`}>
+    <div className={`shell ${onMap ? 'shell--map' : ''} ${pathname === '/analyses' ? 'shell--analyses' : ''} ${pathname === '/parcelles' ? 'shell--parcels' : ''}`}>
       <main className="shell__page"><Outlet /></main>
 
 
