@@ -253,7 +253,7 @@ export default function Analyses() {
                 <div className="an-summary__item">
                   <span className="an-summary__icon an-summary__icon--green"><BarChart3 size={24} /></span>
                   <div className="an-summary__body">
-                    <span className="an-summary__label">Analyses Gemini</span>
+                    <span className="an-summary__label">Analyses Parcelle</span>
                     <b className="an-summary__value">{fmtInt(analyses.length)}</b>
                     <span className="an-summary__hint">{fmtInt(followedParcels)} parcelles suivies</span>
                   </div>
@@ -850,7 +850,7 @@ export default function Analyses() {
           </p>
           <p className="note">
             Seule cette ligne d’historique est supprimée : la parcelle, son contour et sa culture en base
-            sont conservés. L’historique des analyses Gemini n’est pas modifié.
+            sont conservés. L’historique des analyses Parcelle n’est pas modifié.
           </p>
         </Modal>
       )}
@@ -872,7 +872,7 @@ export default function Analyses() {
           </p>
           <p className="note">
             Seuls les enregistrements de cet historique sont concernés : les parcelles, leurs contours et
-            leurs cultures restent en base, et l’historique des analyses Gemini n’est pas modifié.
+            leurs cultures restent en base, et l’historique des analyses Parcelle n’est pas modifié.
           </p>
         </Modal>
       )}
