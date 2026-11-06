@@ -67,9 +67,18 @@ function Notifications() {
 export default function PageHeader() {
   const { pathname } = useLocation();
   if (!PAGES.includes(pathname)) return null;
+  const isParcels = pathname === '/parcelles';
   return (
-    <div className="pageheader">
-      <Stats />
+    <div className={`pageheader ${isParcels ? 'pageheader--parcels' : ''}`}>
+      {isParcels ? (
+        <div className="pageheader__identity">
+          <img src="/logo_malto_sans_fond.png" alt="MALTO cartographie agricole" />
+          <div>
+            <h1>Parcelles</h1>
+            <p>Suivi et gestion de vos parcelles agricoles</p>
+          </div>
+        </div>
+      ) : <Stats />}
       <div className="pageheader__right"><TodayCard /><Notifications /></div>
     </div>
   );

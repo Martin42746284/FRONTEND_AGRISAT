@@ -560,6 +560,22 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .page--cols, .page--single { padding: 68px 12px 0 82px; }
 .page--cols .content, .page--single .content { overflow: auto; }
 .page--cols .filters { position: static; width: 290px; flex: none; background: #fff; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 1px 2px rgba(18,38,43,.04); margin: 0 12px 12px 0; overflow: auto; padding: 14px 16px 24px; }
+.shell--parcels .page--cols { padding-top: 156px; background: #f3f6f3; }
+.shell--parcels .page--cols .content { padding: 0 24px 48px 12px; }
+.shell--parcels .page--cols .filters { border-radius: 14px; border-color: #d7e3d8; box-shadow: 0 4px 16px rgba(28, 73, 42, .08); }
+.shell--parcels .filters__head { margin: -14px -16px 4px; padding: 13px 16px; background: linear-gradient(135deg, #287a43, #176033); color: #fff; }
+.shell--parcels .filters__head h2 { color: #fff; }
+.shell--parcels .filters__head .link-btn { color: #f1fff3; }
+.shell--parcels .content__head { margin: 0 0 14px; padding: 12px 14px; background: #fff; border: 1px solid #dfe8df; border-radius: 14px; box-shadow: 0 3px 14px rgba(28, 73, 42, .06); }
+.shell--parcels .content__head h1 { display: none; }
+.shell--parcels .content__head .muted { display: none; }
+.shell--parcels .content__head > .row { width: 100%; }
+.shell--parcels .content__head .search { flex: 1 1 280px; min-height: 40px; border-radius: 10px; }
+.shell--parcels .content__head .btn { min-height: 40px; border-radius: 10px; }
+.shell--parcels .tablewrap--page { border-color: #dfe8df; border-radius: 14px; box-shadow: 0 5px 18px rgba(28, 73, 42, .08); }
+.shell--parcels .table th { padding: 12px 14px; background: #f0f7ed; color: #285d36; border-bottom-color: #dbe8da; }
+.shell--parcels .table td { padding: 11px 14px; }
+.shell--parcels .table--rows tbody tr:hover, .shell--parcels .table tr.is-current { background: #eef8ef; }
 .filters section { padding: 12px 0; border-bottom: 1px solid var(--line-2); } .filters section:last-child { border: 0; }
 .filters__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 6px; } .filters__head h2 { margin: 0 auto 0 0; font-size: 16px; }
 .filters--float { position: absolute; z-index: 850; top: 68px; left: 82px; width: 320px; max-height: calc(100% - 140px); overflow: auto; padding: 12px 16px 20px; box-shadow: inset 0 2px 0 0 var(--brand-red), 0 6px 22px rgba(22,35,30,.16); }
@@ -612,6 +628,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .dock__item.is-active > svg { background: linear-gradient(145deg, #C81428, var(--brand-red-ink)); color: #fff; box-shadow: 0 3px 10px rgba(182,3,25,.26); }
 .topright { position: fixed; z-index: 950; top: 14px; right: 12px; display: flex; gap: 10px; align-items: center; }
 .pageheader { position: fixed; z-index: 940; top: 14px; left: 92px; right: 76px; height: 52px; display: flex; align-items: center; gap: 16px; }
+.pageheader--parcels { top: 0; left: 0; right: 0; height: 142px; padding: 20px 76px 20px 108px; align-items: flex-start; background: linear-gradient(90deg, rgba(255,255,255,.98) 0%, rgba(255,255,255,.93) 28%, rgba(255,255,255,.18) 58%), url('/fond_parcelle.png') center 42% / cover no-repeat; border-bottom: 1px solid rgba(198, 215, 198, .9); box-shadow: 0 4px 16px rgba(30, 70, 38, .12); }
+.pageheader__identity { display: flex; align-items: center; gap: 22px; min-width: 0; }
+.pageheader__identity img { width: 178px; max-height: 72px; object-fit: contain; object-position: left center; }
+.pageheader__identity > div { border-left: 1px solid rgba(38, 91, 48, .55); padding-left: 22px; }
+.pageheader__identity h1 { color: #205a31; font-size: 28px; letter-spacing: -.03em; }
+.pageheader__identity p { margin: 3px 0 0; color: #405649; font-size: 13px; }
+.pageheader--parcels .pageheader__right { margin-left: auto; }
 .hstats { display: flex; gap: 10px; min-width: 0; overflow: hidden; }
 .hstat { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 18px 0 8px; border-radius: 12px; white-space: nowrap; background: rgba(252,253,251,.97); backdrop-filter: blur(12px); border: 1px solid var(--line); box-shadow: 0 2px 10px rgba(22,35,30,.06); transition: background .15s ease, box-shadow .15s ease; } .hstat:hover { background: #fff; box-shadow: 0 6px 18px rgba(22,35,30,.11); }
 .hstat > svg { box-sizing: content-box; padding: 8px; border-radius: 10px; background: var(--brand-red-soft); color: var(--brand-red); flex: none; }
